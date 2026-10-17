@@ -1,0 +1,23 @@
+.fonts
+mimeapps.list
+pavucontrol.ini
+user-dirs.dirs
+user-dirs.locale
+
+pavucontrol
+users-
+Code
+gtk-3.0
+xfce4
+xarchiver
+Thunar
+pulse
+microsoft-ed
+*.deb
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+.plans/
