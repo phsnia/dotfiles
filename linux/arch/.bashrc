@@ -33,3 +33,6 @@ eval "$(mise activate bash)"
 export PATH="$HOME/.local/bin:$PATH"
 alias tealdeer='tldr'
 export PATH="$HOME/.local/bin:$PATH"
+
+# opencode
+export PATH=/home/phng/.opencode/bin:$PATH

@@ -229,36 +229,16 @@ utilities() {
 
     # Docker group is configured in the devkit stage (docker is installed there).
 
-    # yay (AUR helper) — makepkg refuses to run as root, so build as a
-    # non-root user when the script itself was invoked as root.
+    # yay (AUR helper) — built from source as the current (non-root) user.
     if ! command -v yay &>/dev/null; then
         info "Installing yay..."
-        local build_user="${SUDO_USER:-$USER}"
-        local build_home
-        build_home="$(getent passwd "$build_user" | cut -d: -f6)"
-        if [[ "$build_user" == "root" && "$(id -un)" == "root" ]]; then
-            error "makepkg cannot run as root. Run this script as a normal user (it uses sudo internally)."
-            exit 1
-        fi
-        local yay_dir="$build_home/yay"
+        local yay_dir="$HOME/yay"
         if [[ ! -d "$yay_dir/.git" ]]; then
-            if ((EUID == 0)); then
-                sudo -u "$build_user" git clone https://aur.archlinux.org/yay.git "$yay_dir"
-            else
-                git clone https://aur.archlinux.org/yay.git "$yay_dir"
-            fi
+            git clone https://aur.archlinux.org/yay.git "$yay_dir"
         else
-            if ((EUID == 0)); then
-                sudo -u "$build_user" git -C "$yay_dir" pull --ff-only
-            else
-                git -C "$yay_dir" pull --ff-only
-            fi
+            git -C "$yay_dir" pull --ff-only
         fi
-        if ((EUID == 0)); then
-            sudo -u "$build_user" bash -c "cd '$yay_dir' && makepkg -si --noconfirm"
-        else
-            (cd "$yay_dir" && makepkg -si --noconfirm)
-        fi
+        (cd "$yay_dir" && makepkg -si --noconfirm)
     fi
 
     # AUR packages
@@ -356,6 +336,13 @@ EOF
 #
 # @param {...string} stage - Stage names to run. Defaults to all stages.
 main() {
+    # makepkg (used by yay and the AUR steps) refuses to run as root.
+    # Run as a normal user; this script escalates with sudo where needed.
+    if ((EUID == 0)); then
+        error "Do not run this script as root. Run it as a normal user (it uses sudo internally)."
+        exit 1
+    fi
+
     if (($# == 0)); then
         # Install stages first, then config stages.
         set -- core drivers utilities devkit fonts system dotfiles polkit
