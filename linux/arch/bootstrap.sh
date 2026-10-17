@@ -136,6 +136,9 @@ dotfiles() {
     local -a CONFIGS=(
         i3
         alacritty
+        opencode
+        git
+        tmux
     )
     for config in "${CONFIGS[@]}"; do
         link_config "$DOTFILES_CONFIG/$config" "$CONFIG_DIR/$config"
@@ -209,7 +212,8 @@ drivers() {
 
 # --- Utilities  ---
 
-# Install window manager, Xorg, audio stack, yay (AUR helper) and AUR apps.
+# Install window manager, terminal multiplexer, Xorg, audio stack, yay (AUR
+# helper) and AUR apps.
 # Also enables the ly display manager and adds $USER to the docker group.
 #
 # @example
@@ -224,6 +228,7 @@ utilities() {
         ly \
         dmenu \
         neovim \
+        tmux \
         feh \
         thunar \
         thunar-volman \
@@ -313,7 +318,7 @@ devkit() {
 
 # --- Fonts ---
 
-# Install optional system fonts (Noto, Dejavu, Liberation).
+# Install optional system fonts (Noto, Dejavu, Liberation, Comic Mono).
 #
 # @example
 #   fonts
@@ -325,7 +330,23 @@ fonts() {
         noto-fonts-emoji \
         noto-fonts-extra \
         ttf-dejavu \
-        ttf-liberation
+        ttf-liberation \
+        curl
+
+    # Comic Mono — not in the repos; fetch from upstream and register
+    # system-wide so fontconfig (and Alacritty's "Comic Mono" family) finds it.
+    local font_dir="/usr/local/share/fonts/comic-mono"
+    if [[ ! -f "$font_dir/ComicMono.ttf" ]]; then
+        info "Installing Comic Mono..."
+        sudo install -d -m 755 "$font_dir"
+        sudo curl -fsSLo "$font_dir/ComicMono.ttf" \
+            https://dtinth.github.io/comic-mono-font/ComicMono.ttf
+        sudo chmod 644 "$font_dir/ComicMono.ttf"
+    fi
+
+    step 1 "Refreshing font cache"
+    sudo fc-cache -f "$font_dir"
+
     success "Fonts installed."
 }
 

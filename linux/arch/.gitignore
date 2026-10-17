@@ -7,3 +7,6 @@ mimeapps.list
 Google/
 autostart/
 ibus/*
+service.json
+.env
+local
