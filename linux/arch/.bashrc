@@ -9,9 +9,7 @@ alias ls='ls --color=auto'
 alias ll='ls -alF --color=auto'
 alias grep='grep --color=auto'
 
-# alias 
-alias up="sudo pacman -Syu"
-
+# cheat git
 function fput() {
     git status &&
     read -r -p "Commit and push? (y/N) " confirm &&
@@ -23,10 +21,11 @@ function fput() {
     echo "==> Push file"
 }
 
+# --- Alias --- 
+alias up="sudo pacman -Syu"
 tldrv() {
     tldr "$@" | less -FRX
 }
-
 alias src="source ~/.bashrc"
 
 PS1='[\u@\h \W]\$ '
