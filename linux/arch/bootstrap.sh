@@ -65,7 +65,7 @@ warn()   { _log "${YELLOW}" "==>" "$@"; }
 error()  { _log "${RED}"   "==>" "$@" >&2; }
 
 step() {
-    _log "${BLUE}" "-->" "$@"
+    _log "${BLUE}" "->" "$@"
 }
 
 # Helpers
@@ -229,18 +229,36 @@ utilities() {
 
     # Docker group is configured in the devkit stage (docker is installed there).
 
-    # yay (AUR helper)
+    # yay (AUR helper) — makepkg refuses to run as root, so build as a
+    # non-root user when the script itself was invoked as root.
     if ! command -v yay &>/dev/null; then
         info "Installing yay..."
-        if [[ ! -d "$HOME/yay/.git" ]]; then
-            git clone https://aur.archlinux.org/yay.git "$HOME/yay"
-        else
-            git -C "$HOME/yay" pull --ff-only
+        local build_user="${SUDO_USER:-$USER}"
+        local build_home
+        build_home="$(getent passwd "$build_user" | cut -d: -f6)"
+        if [[ "$build_user" == "root" && "$(id -un)" == "root" ]]; then
+            error "makepkg cannot run as root. Run this script as a normal user (it uses sudo internally)."
+            exit 1
         fi
-        (
-            cd "$HOME/yay"
-            makepkg -si --noconfirm
-        )
+        local yay_dir="$build_home/yay"
+        if [[ ! -d "$yay_dir/.git" ]]; then
+            if ((EUID == 0)); then
+                sudo -u "$build_user" git clone https://aur.archlinux.org/yay.git "$yay_dir"
+            else
+                git clone https://aur.archlinux.org/yay.git "$yay_dir"
+            fi
+        else
+            if ((EUID == 0)); then
+                sudo -u "$build_user" git -C "$yay_dir" pull --ff-only
+            else
+                git -C "$yay_dir" pull --ff-only
+            fi
+        fi
+        if ((EUID == 0)); then
+            sudo -u "$build_user" bash -c "cd '$yay_dir' && makepkg -si --noconfirm"
+        else
+            (cd "$yay_dir" && makepkg -si --noconfirm)
+        fi
     fi
 
     # AUR packages
