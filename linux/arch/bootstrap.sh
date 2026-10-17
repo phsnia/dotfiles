@@ -331,8 +331,8 @@ Usage: $(basename "$0") [stage ...]
 
 Stages: ${!STAGE_MAP[*]}
 
-With no arguments, every stage runs in order:
-  system -> dotfiles -> polkit -> core -> drivers -> utilities -> devkit -> fonts
+With no arguments, install stages run first, then config stages:
+  core -> drivers -> utilities -> devkit -> fonts -> system -> dotfiles -> polkit
 EOF
 }
 
@@ -341,7 +341,8 @@ EOF
 # @param {...string} stage - Stage names to run. Defaults to all stages.
 main() {
     if (($# == 0)); then
-        set -- system dotfiles polkit core drivers utilities devkit fonts
+        # Install stages first, then config stages.
+        set -- core drivers utilities devkit fonts system dotfiles polkit
     fi
 
     for stage in "$@"; do
