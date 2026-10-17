@@ -227,9 +227,7 @@ utilities() {
         sof-firmware
     success "Audio installed."
 
-    # Docker group
-    step 1 "Adding ${USER} to docker group"
-    sudo usermod -aG docker "$USER"
+    # Docker group is configured in the devkit stage (docker is installed there).
 
     # yay (AUR helper)
     if ! command -v yay &>/dev/null; then
