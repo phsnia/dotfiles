@@ -9,4 +9,5 @@ autostart/
 ibus/*
 service.json
 .env
-local
+.config/git/local
+.config/ssh/local

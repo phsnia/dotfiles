@@ -1,0 +1,16 @@
+# Personal ssh hosts. Copy to local (gitignored, mode 600) and edit.
+#
+#   cp local.example local && chmod 600 local
+#
+# local is included by config, so anything here is merged into every ssh
+# invocation.
+
+# Host github.com
+# 	User git
+# 	IdentityFile ~/.ssh/id_ed25519
+
+# Host vps
+# 	HostName 203.0.113.10
+# 	User phng
+# 	Port 22
+# 	IdentityFile ~/.ssh/id_ed25519

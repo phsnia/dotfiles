@@ -139,10 +139,33 @@ dotfiles() {
         opencode
         git
         tmux
+        ssh
     )
     for config in "${CONFIGS[@]}"; do
         link_config "$DOTFILES_CONFIG/$config" "$CONFIG_DIR/$config"
     done
+
+    # ~/.ssh cannot be replaced wholesale (private keys live there), and ssh
+    # has no XDG support, so point ~/.ssh/config at the linked config with a
+    # one-line include instead of symlinking the directory.
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+
+    local ssh_include="Include ~/.config/ssh/config"
+    if [[ ! -e "$HOME/.ssh/config" ]]; then
+        step 1 "Creating ~/.ssh/config shim for ~/.config/ssh/config"
+        printf '%s\n' "$ssh_include" >"$HOME/.ssh/config"
+        chmod 600 "$HOME/.ssh/config"
+    elif ! grep -qF '~/.config/ssh/config' "$HOME/.ssh/config"; then
+        warn "~/.ssh/config exists without the dotfiles include; add:"
+        warn "  $ssh_include"
+    fi
+
+    # Seed the gitignored ssh/local so the include above always resolves.
+    if [[ ! -f "$CONFIG_DIR/ssh/local" && -f "$CONFIG_DIR/ssh/local.example" ]]; then
+        step 1 "Seeding ~/.config/ssh/local from local.example"
+        install -m 600 "$CONFIG_DIR/ssh/local.example" "$CONFIG_DIR/ssh/local"
+    fi
 
     success "Dotfiles linked."
 }

@@ -1,0 +1,14 @@
+# ~/.config/ssh/config — linked from linux/arch/.config/ssh/config
+#
+# OpenSSH has no XDG support: it reads ~/.ssh/config, which the dotfiles
+# stage writes as a one-line shim that includes this file.
+#
+# Personal hosts and identities live in ~/.config/ssh/local, which is
+# gitignored.
+
+Include ~/.config/ssh/local
+
+Host *
+	AddKeysToAgent yes
+	ServerAliveInterval 60
+	ServerAliveCountMax 3
