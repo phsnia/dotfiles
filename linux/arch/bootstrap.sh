@@ -107,6 +107,22 @@ system() {
 
 # --- Dotfiles ---
 
+# Symlink $1 to $2, backing up an existing real path to "$2.bak" first.
+# A plain `ln -sfn` refuses to replace an existing directory.
+#
+# @param {string} src  - Source path to link from.
+# @param {string} dest - Destination link path.
+link_config() {
+    local src="$1" dest="$2"
+
+    if [[ -e "$dest" && ! -L "$dest" ]]; then
+        step 1 "Backing up existing $dest -> $dest.bak"
+        mv "$dest" "$dest.bak"
+    fi
+
+    ln -sTfn "$src" "$dest"
+}
+
 # Symlink dotfiles config directories and .bashrc into $HOME.
 #
 # @example
@@ -114,14 +130,15 @@ system() {
 dotfiles() {
     info "Linking dotfiles..."
 
-    ln -sfn "$DOTFILES_DIR/.bashrc" "$HOME/.bashrc"
+    link_config "$DOTFILES_DIR/.bashrc" "$HOME/.bashrc"
 
+    mkdir -p "$CONFIG_DIR"
     local -a CONFIGS=(
         i3
         alacritty
     )
     for config in "${CONFIGS[@]}"; do
-        ln -sTfn "$DOTFILES_CONFIG/$config" "$CONFIG_DIR/$config"
+        link_config "$DOTFILES_CONFIG/$config" "$CONFIG_DIR/$config"
     done
 
     success "Dotfiles linked."
@@ -208,6 +225,10 @@ utilities() {
         dmenu \
         neovim \
         feh \
+        thunar \
+        thunar-volman \
+        gvfs \
+        tumbler \
         htop
 
     # Configure ly display manager
