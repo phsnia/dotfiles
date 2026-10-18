@@ -16,11 +16,3 @@ Reload afterwards with:
 ```
 src_profile
 ```
-
-Other scripts in this directory:
-
-| Script | Purpose |
-| --- | --- |
-| `init_env.ps1` | Links the profile and a `.bashrc`; superseded by `bootstrap.ps1` |
-| `debloat.ps1` | Windows debloat |
-| `install_pkg.ps1` | Package install |

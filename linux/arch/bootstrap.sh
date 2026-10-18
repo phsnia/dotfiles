@@ -38,10 +38,14 @@ readonly RESET='\033[0m'
 #   info 1 "msg"   -> 	==> msg
 #   info "msg"     -> ==> msg   (level defaults to 0)
 #
-# Arrows:
-#   info/success/warn/error  -> ==>
-#   step                     -->   (sub-step)
-
+# Low-level log writer shared by the log helpers below.
+#
+# @param {string} color   - ANSI color escape.
+# @param {string} arrow   - Arrow prefix (==> or ->).
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   _log "$BLUE" "==>" 1 "indented"
 _log() {
     local color="$1" arrow="$2"; shift 2
 
@@ -59,11 +63,44 @@ _log() {
     echo -e "${indent}${color}${arrow}${RESET} $*"
 }
 
+# Log an info line (blue ==>).
+#
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   info "Installing..."
 info()   { _log "${BLUE}"  "==>" "$@"; }
+
+# Log a success line (green ==>).
+#
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   success "Done."
 success() { _log "${GREEN}" "==>" "$@"; }
+
+# Log a warning line (yellow ==>).
+#
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   warn "Careful."
 warn()   { _log "${YELLOW}" "==>" "$@"; }
+
+# Log an error line (red ==>, written to stderr).
+#
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   error "Something failed."
 error()  { _log "${RED}"   "==>" "$@" >&2; }
 
+# Log a sub-step line (blue ->).
+#
+# @param {number} [level] - Optional indentation level.
+# @param {...string} msg  - Message text.
+# @example
+#   step 1 "Enabling ly@tty1.service"
 step() {
     _log "${BLUE}" "->" "$@"
 }
@@ -112,6 +149,8 @@ system() {
 #
 # @param {string} src  - Source path to link from.
 # @param {string} dest - Destination link path.
+# @example
+#   link_config "$DOTFILES_DIR/.bashrc" "$HOME/.bashrc"
 link_config() {
     local src="$1" dest="$2"
 
@@ -386,6 +425,10 @@ readonly -A STAGE_MAP=(
     [fonts]=fonts
 )
 
+# Print script usage and the list of available stages.
+#
+# @example
+#   usage
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [stage ...]
@@ -400,6 +443,8 @@ EOF
 # Entry point: update the system, then run the requested stages (or all of them).
 #
 # @param {...string} stage - Stage names to run. Defaults to all stages.
+# @example
+#   main core fonts
 main() {
     # makepkg (used by yay and the AUR steps) refuses to run as root.
     # Run as a normal user; this script escalates with sudo where needed.
