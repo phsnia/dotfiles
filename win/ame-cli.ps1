@@ -12,14 +12,8 @@
 #   . .\ame-cli.ps1
 #   Invoke-ReviCli
 
-# Fallbacks so the file also works standalone (bootstrap already defines
-# richer versions of these).
-if (-not (Get-Command Write-Log -ErrorAction SilentlyContinue)) {
-    function Write-Log {
-        param([Parameter(Mandatory)][string]$Message, [string]$Level = 'INFO')
-        Write-Host ('{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message)
-    }
-}
+# Fallback so the file also works standalone (bootstrap already defines a
+# richer version of this).
 if (-not (Get-Command Get-RemoteFile -ErrorAction SilentlyContinue)) {
     function Get-RemoteFile {
         param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)][string]$Directory)
@@ -39,7 +33,7 @@ $script:CliDownloads = Join-Path $env:USERPROFILE 'Downloads'
 # configuration" pages (remove-pinned-items included).
 # Notes:
 #   - Edge is KEPT (no remove-edge) and browser-brave is omitted: Brave is
-#     installed via winget in bootstrap's Install-WingetPackages instead.
+#     installed via winget in install-software.ps1 instead.
 #   - remove-appx-xbox and disable-automatic-maintenance default to OFF in
 #     the wizard - "choose all" turns them on.
 $script:ReviOptions = @(
@@ -78,7 +72,7 @@ function Find-SevenZip {
     }
 
     if (Get-Command scoop -ErrorAction SilentlyContinue) {
-        Write-Log 'Installing 7zip via scoop...'
+        Write-Host '==> Installing 7zip via scoop...'
         scoop install 7zip
         $shim = "$env:USERPROFILE\scoop\shims\7z.exe"
         if (Test-Path $shim) { return $shim }
@@ -132,7 +126,7 @@ function Invoke-ReviCli {
     # Unpack the CLI.
     $cliDir = Join-Path $Destination 'AME-CLI'
     if (-not (Get-ChildItem $cliDir -Recurse -Filter 'TrustedUninstaller.CLI.exe' -ErrorAction SilentlyContinue)) {
-        Write-Log 'Extracting TrustedUninstaller CLI...'
+        Write-Host '==> Extracting TrustedUninstaller CLI...'
         New-Item -ItemType Directory -Path $cliDir -Force | Out-Null
         Expand-Archive -Path $cliZip -DestinationPath $cliDir -Force
     }
@@ -144,7 +138,7 @@ function Invoke-ReviCli {
     # Unpack the playbook (.apbx = 7z, password 'malte').
     $pbDir = Join-Path $cliDir 'playbook'
     if (-not (Get-ChildItem $pbDir -Recurse -Filter 'playbook.conf' -ErrorAction SilentlyContinue)) {
-        Write-Log "Extracting playbook (7z, password 'malte')..."
+        Write-Host "==> Extracting playbook (7z, password 'malte')..."
         New-Item -ItemType Directory -Path $pbDir -Force | Out-Null
         Expand-SevenZip -Archive $playbook -Destination $pbDir -Password 'malte'
     }
@@ -155,8 +149,8 @@ function Invoke-ReviCli {
     $pbRoot = $conf.Directory.FullName
 
     # Apply. -NoNewWindow keeps the CLI's progress visible in this console.
-    Write-Log "Applying ReviOS playbook via CLI with options: $($Options -join ' ')"
+    Write-Host "==> Applying ReviOS playbook via CLI with options: $($Options -join ' ')"
     $proc = Start-Process -FilePath $exe -ArgumentList (@("`"$pbRoot`"") + $Options) -Wait -NoNewWindow -PassThru
     if ($proc.ExitCode -ne 0) { throw "TrustedUninstaller CLI failed with exit code $($proc.ExitCode)." }
-    Write-Log 'TrustedUninstaller CLI finished.'
+    Write-Host '==> TrustedUninstaller CLI finished.'
 }
