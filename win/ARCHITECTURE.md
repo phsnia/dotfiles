@@ -41,14 +41,17 @@ flowchart TD
   bootstrap continue; critical components (scoop init, winget init, debloat
   apply, profile link) log `ERROR` and rethrow so `main` can save the
   recovery state and stop.
-- **One scan, one install** — `Update-Windows` scans once with
-  `PSWindowsUpdate`, prints the pending updates and asks before touching
-  anything. After the confirmation a single `Get-WindowsUpdate -Install`
-  pass downloads and installs the pending content. There is no separate
-  download phase and no concurrency knob: the Windows Update service
-  already fetches content over several connections on its own, while
-  installs have to stay serial because CBS/TrustedInstaller takes an
-  exclusive servicing lock (`0x80240016` / `1618` otherwise).
+- **One check, no install** — `Test-WindowsUpdates` scans once through the
+  built-in Windows Update client API (`Microsoft.Update.Session`) and
+  reports the result: up to date, or the pending updates with their size.
+  It never approves, downloads or installs anything — approving an update
+  is what lets the client install it on its own, so even `-Unattended`
+  only opens the Windows Update page and leaves the installing to the
+  user. `-SkipUpdateCheck` skips the scan entirely.
+  There is no separate download phase and no concurrency knob: the Windows
+  Update service already fetches content over several connections on its
+  own, while installs have to stay serial because CBS/TrustedInstaller
+  takes an exclusive servicing lock (`0x80240016` / `1618` otherwise).
 - `main`'s outer `try/catch` is only a last resort; its `finally` block pauses
   with "Press Enter to close" on both success and failure (skipped with
   `-Unattended`), so the elevated RunAs window does not vanish instantly.
@@ -58,8 +61,8 @@ flowchart TD
 | `Initialize-Environment` | CurrentUser execution policy already `RemoteSigned`; directories exist | nothing to set | WARN, continue |
 | `Initialize-Scoop` | `scoop` on PATH; `main` bucket present; `git` installed | scoop ready, git installed | rethrow (needed downstream) |
 | `Initialize-Winget` | `winget` on PATH; sources refreshed | winget ready | missing → `Repair-Winget` (Store update scan, then GitHub msixbundle download); still missing → rethrow (needed by `install-software.ps1`) |
-| `Update-Windows` | update scan returns 0 pending updates (NuGet provider and PSGallery trust prepared non-interactively) | up to date, no reboot | WARN, continue |
-| `Invoke-Debloat` | stage marker `stage-debloat.done` in state dir; all four Windows Security toggles off | playbook already applied | rethrow; also blocks before the CLI when a toggle stays on (the Defender stage hands the remaining toggles to the user first) |
+| `Test-WindowsUpdates` | scan returns 0 pending updates (never installs; `-SkipUpdateCheck` skips the scan) | nothing to install | WARN, continue — a failed scan logs and continues |
+| `Invoke-Debloat` | stage marker `stage-debloat.done` in state dir; all four Windows Security toggles off | playbook already applied | rethrow; also blocks before the CLI when a toggle stays on (`Disable-Defender` hands the toggles to the user first) |
 | `Invoke-Drivers` | no present device with `Status != OK/Unknown` | all devices healthy | rethrow only on user decline; else WARN |
 | `Complete-Bootstrap` | live `$PROFILE` is a symlink into this repo | link already correct | rethrow |
 
@@ -90,11 +93,11 @@ flowchart TD
     HW2 -- No --> WERR[Log Error - rethrow]
     HW2 -- Yes --> HS
     HW -- Yes --> HS[Refresh winget sources]
-    HS --> I[Update Windows - scan first, skip if current]
-    I --> IU{Updates pending and confirmed?}
+    HS --> I[Test Windows Updates - scan only]
+    I --> IU{Pending updates?}
 
     IU -- No --> DJ
-    IU -- Yes --> II[Install in one serial pass - CBS lock is exclusive]
+    IU -- Yes --> II[Report them - open ms-settings:windowsupdate - never install]
     II --> DJ
 
     subgraph DEBLOAT["1. Debloat - ReviOS"]
@@ -159,53 +162,69 @@ flowchart TD
 
 | File | Role |
 | --- | --- |
-| `bootstrap.ps1` | Stage components + `main` orchestration (init, debloat, drivers, profile link) |
+| `bootstrap.ps1` | Stage components + `main` orchestration (init, update check, debloat, drivers, profile link) |
+| `lib/common.ps1` | Shared helpers (`Get-RemoteFile`, `Test-Artifact`) — dot-sourced by `bootstrap.ps1`, `install-software.ps1` and `ame-cli.ps1` |
 | `install-software.ps1` | Scoop/winget packages + external installers; run separately after bootstrap |
 | `ame-cli.ps1` | `Invoke-ReviCli` — headless ReviOS apply via TrustedUninstaller CLI |
 | `tests/` | Pester tests — `Bootstrap.Tests.ps1` (all bootstrap stages incl. debloat), `Defender.Tests.ps1` (Defender helpers), `InstallSoftware.Tests.ps1` (software install + state file). Run with `Invoke-Pester .\tests` |
-| `specs/` | Plan documents for pending/completed changes |
+| `specs/` | Plan documents for pending/completed changes (`specs/plans/verify-windows-update.md` documents the update check) |
 
 ## Windows Defender
 
 `bootstrap.ps1` owns everything Defender related: the debloat stage calls
-`Disable-Defender` + `Resolve-DefenderManually` before the playbook runs,
-because the playbook refuses to apply while Defender is on.
+`Disable-Defender` before the playbook runs, because the playbook refuses to
+apply while Defender is on.
 
-The flow is:
+Turning them off is deliberately **manual** — the stage never writes to the
+platform:
 
-1. **Verify** — read the four Windows Security toggles the ReviOS playbook
-   checks (real-time, cloud-delivered, sample submission, Tamper
-   Protection). All off → nothing to do.
-2. **Scripted** — `Set-MpPreference` turns off real-time, behavior/IOAV,
-   cloud-delivered (block at first sight + MAPS) and sample submission; the
-   `DisableAntiSpyware` and real-time policy keys keep them off.
-3. **By hand** — Tamper Protection locks real-time protection: both
-   programmatic routes fail (`Set-MpPreference -DisableTamperProtection`
-   answers `0x80004001`, the registry write answers "access not allowed").
-   The stage opens Windows Security, waits and re-checks (max 3 rounds).
-4. **Verify again** — the debloat stage throws when a toggle is still on, so
-   the TrustedUninstaller CLI never runs against a protected machine.
+1. **Verify** — `Get-DefenderTogglesOn` reads the four Windows Security
+   toggles the ReviOS playbook checks (real-time, cloud-delivered, sample
+   submission, Tamper Protection). All off → nothing to do.
+2. **Hand over** — print what is still on, open Windows Security, wait for
+   the user, re-check (max 3 rounds, 1 with `-Unattended`).
+3. **Verify again** — `Disable-Defender` returns the result; the debloat
+   stage throws when a toggle is still on, so the TrustedUninstaller CLI
+   never runs against a protected machine.
+
+There is no `Set-MpPreference` call and no policy key behind steps 2–3.
+Tamper Protection refuses every scripted change (`Set-MpPreference` answers
+`0x80004001`, the registry write answers "access not allowed") and releasing
+it programmatically never worked on a protected machine, so the scripted
+routes were removed rather than kept as dead weight. Windows Security is the
+single place where the toggles change: **Tamper protection** first, then the
+rest.
 
 ## Windows Update
 
-`Update-Windows` is deliberately the smallest stage in the bootstrap:
+`Test-WindowsUpdates` verifies the update state and **never installs
+anything** — not with `-AcceptAll`, not unattended. Approving an update is
+what lets the Windows Update client install it on its own, so the stage
+approves nothing either:
 
-1. **Prepare** — install the NuGet package provider, trust PSGallery and make
-   sure `PSWindowsUpdate` is present, so no prompt can stop the run.
-2. **Scan** — one `Get-WindowsUpdate` call. No pending updates means the
-   stage returns right away and no reboot is needed.
-3. **Report** — print the pending updates with their size
-   (`Format-UpdateSize` normalizes the `44MB` / byte-count shapes that
-   PSWindowsUpdate reports).
-4. **Confirm** — installing means a reboot later, so the user decides.
-5. **Install** — a single `Get-WindowsUpdate -Install -AcceptAll
-   -IgnoreReboot` pass downloads and installs the pending updates.
+1. **Scan** — `Get-PendingWindowsUpdates` asks the built-in Windows Update
+   client API (`Microsoft.Update.Session`, criteria
+   `IsInstalled=0 and IsHidden=0`) for pending updates. The scan is
+   read-only, needs no elevation, no module and no package provider. A
+   failed scan logs a warning and is reported as "no pending updates"
+   rather than blocking the bootstrap.
+2. **Report** — print the pending updates with their size
+   (`Format-UpdateSize` normalizes the unit-suffixed / byte-count / array
+   shapes; `MaxDownloadSize` is a 32-bit ULONG that the COM binder can
+   return with junk in the upper bits, so the value is masked to 32 bits and
+   dropped when implausible) plus the total.
+3. **Hand over** — an interactive run opens `ms-settings:windowsupdate`, so
+   the user installs and reboots when it suits them. `-Unattended` opens
+   nothing and still installs nothing.
 
-There is no separate download phase. The Windows Update service already
-fetches content over several connections on its own, and installs must stay
-serial: CBS/TrustedInstaller holds an exclusive servicing lock, so concurrent
-installs only produce `0x80240016` / `1618`. The stage is best effort — a
-failure is logged and the bootstrap continues.
+The result is recorded as the `windowsUpdate` block (`upToDate`,
+`pendingCount`, `pendingSizeMb`, `skipped`, `checkedAt`) in
+`bootstrap.state.json`; `-SkipUpdateCheck` skips the scan and writes
+`"skipped": true`.
+
+There is no install phase, so there is no download phase and no concurrency
+knob: the Windows Update service fetches content over several connections on
+its own, and installing is left entirely to Windows.
 
 ## Software installation
 

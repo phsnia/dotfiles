@@ -4,20 +4,29 @@
 # winget, debloat, manage drivers, link the profile and verify.
 # Software installation lives in install-software.ps1.
 #
-# The file is read top-down in four parts:
+# The file is read top-down in numbered sections:
 #
-#   1. Configuration  - paths, URLs and the shared switches.
-#   2. Helpers        - utilities the stages build on.
-#   3. Stages         - one function per stage, in the order main runs them.
-#   4. Entry point    - main.
+#   1. Configuration    - paths, URLs and the shared switches.
+#   2. Helpers          - utilities the stages build on.
+#   3. Environment      - execution policy and directories.
+#   4. Scoop            - scoop plus git, the only package installed here.
+#   5. Winget           - App Installer, repaired when it is missing.
+#   6. Windows Update   - verify only: report pending updates, install none.
+#   7. Windows Defender - the four toggles the ReviOS playbook needs off.
+#   8. Debloat          - the ReviOS playbook.
+#   9. Drivers          - OEM and vendor driver packages.
+#  10. Profile          - symlink $PROFILE into this repo.
+#  11. Entry point      - main.
 #
 # @example
 #   .\bootstrap.ps1
+#   .\bootstrap.ps1 -SkipUpdateCheck
 
 [CmdletBinding()]
 param(
     [string]$ProfilePath,
-    [switch]$Unattended
+    [switch]$Unattended,
+    [switch]$SkipUpdateCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,68 +35,31 @@ $ErrorActionPreference = 'Stop'
 # check resolves the live $PROFILE of the session running the bootstrap.
 $script:ProfilePathExplicit = $PSBoundParameters.ContainsKey('ProfilePath')
 
+# Result of the Windows update check, saved to the state file.
+$script:UpdateCheckResult = $null
+
 # Load the helper scripts that live next to this one.
+. (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'ame-cli.ps1')
 
 # -----------------------------------------------------------------------------
-# Configuration
+# 1. Configuration
 # -----------------------------------------------------------------------------
 
 $Config = @{
-    Downloads    = Join-Path $env:USERPROFILE 'Downloads'
-    StateDir     = Join-Path $env:USERPROFILE '.dotfiles'
-    StateFile    = Join-Path $env:USERPROFILE '.dotfiles\bootstrap.state.json'
-    ReviPlaybook = 'https://github.com/meetrevision/playbook/releases/download/26.04/Revi-PB-26.04.apbx'
-    CliStandalone = 'https://github.com/Ameliorated-LLC/trusted-uninstaller-cli/releases/download/0.8.4/CLI-Standalone.zip'
-    MsiCenter    = 'https://download.msi.com/uti_exe/desktop/MSI-Center.zip'
-    NvidiaDriver = 'https://us.download.nvidia.com/Windows/616.56/616.56-desktop-win10-win11-64bit-international-dch-whql.exe'
+    Downloads       = Join-Path $env:USERPROFILE 'Downloads'
+    StateDir        = Join-Path $env:USERPROFILE '.dotfiles'
+    StateFile       = Join-Path $env:USERPROFILE '.dotfiles\bootstrap.state.json'
+    ReviPlaybook    = 'https://github.com/meetrevision/playbook/releases/download/26.04/Revi-PB-26.04.apbx'
+    CliStandalone   = 'https://github.com/Ameliorated-LLC/trusted-uninstaller-cli/releases/download/0.8.4/CLI-Standalone.zip'
+    MsiCenter       = 'https://download.msi.com/uti_exe/desktop/MSI-Center.zip'
+    NvidiaDriver    = 'https://us.download.nvidia.com/Windows/616.56/616.56-desktop-win10-win11-64bit-international-dch-whql.exe'
+    UpdateSettings  = 'ms-settings:windowsupdate'
 }
 
 # -----------------------------------------------------------------------------
-# Helpers
+# 2. Helpers
 # -----------------------------------------------------------------------------
-
-# Download a file if it is not already present.
-#
-# @param {string} Url       - Remote URL.
-# @param {string} Directory - Destination directory.
-# @return {string} Full path to the downloaded file.
-# @example
-#   Get-RemoteFile -Url $Config.MsiCenter -Directory $Config.Downloads
-function Get-RemoteFile {
-    param(
-        [Parameter(Mandatory)][string]$Url,
-        [Parameter(Mandatory)][string]$Directory
-    )
-
-    $fileName = Split-Path $Url -Leaf
-    $output = Join-Path $Directory $fileName
-
-    if (Test-Path $output) {
-        Write-Host "==> Already downloaded: $fileName"
-        return $output
-    }
-
-    Write-Host "==> Downloading: $fileName"
-    curl.exe -L $Url -o $output
-    if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
-
-    return $output
-}
-
-# Verify an artifact exists and is non-empty.
-#
-# @param {string} Path - File to verify.
-# @return {bool} True when the artifact is usable.
-# @example
-#   Test-Artifact -Path $file
-function Test-Artifact {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-Path $Path)) { return $false }
-    if ((Get-Item $Path).Length -eq 0) { return $false }
-    return $true
-}
 
 # Ask the user to confirm an interactive step.
 #
@@ -135,11 +107,16 @@ function Write-StateFile {
 # @example
 #   Save-CompletionState
 function Save-CompletionState {
-    Write-StateFile -State @{
+    $state = @{
         status     = 'complete'
         finishedAt = (Get-Date).ToString('o')
         profile    = (Resolve-ProfilePath)
     }
+
+    # The Windows update check result, when the check ran.
+    if ($script:UpdateCheckResult) { $state['windowsUpdate'] = $script:UpdateCheckResult }
+
+    Write-StateFile -State $state
     Write-Host "==> Completion state saved: $($Config.StateFile)"
 }
 
@@ -205,8 +182,24 @@ function Update-SessionPath {
                 [Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
+# Release a COM object so its handle does not stay open for the rest of
+# the run.
+#
+# @param {object} Object - COM object to release.
+# @example
+#   Release-Com $session
+function Release-Com {
+    param([Parameter(Mandatory)]$Object)
+
+    try {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($Object)
+    } catch {
+        # Not a COM object (or already released) - nothing to release.
+    }
+}
+
 # -----------------------------------------------------------------------------
-# Stages
+# 3. Environment
 # -----------------------------------------------------------------------------
 
 # Print the banner and prepare the state directory.
@@ -236,6 +229,7 @@ function Assert-Administrator {
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($script:ProfilePathExplicit) { $argList += " -ProfilePath `"$ProfilePath`"" }
     if ($Unattended) { $argList += ' -Unattended' }
+    if ($SkipUpdateCheck) { $argList += ' -SkipUpdateCheck' }
 
     Write-Host "==> Not elevated; relaunching as administrator..."
     Start-Process (Get-Process -Id $PID).Path -Verb RunAs -ArgumentList $argList
@@ -302,6 +296,10 @@ function Initialize-Environment {
         Ensure-Directory -Path $dir
     }
 }
+
+# -----------------------------------------------------------------------------
+# 4. Scoop
+# -----------------------------------------------------------------------------
 
 # Install Scoop when it is missing, or update it when it is already there.
 #
@@ -381,6 +379,10 @@ function Initialize-Scoop {
         throw
     }
 }
+
+# -----------------------------------------------------------------------------
+# 5. Winget
+# -----------------------------------------------------------------------------
 
 # Check whether winget resolves on PATH.
 #
@@ -541,69 +543,85 @@ function Initialize-Winget {
     }
 }
 
-# Trust PSGallery so Install-Module never stops on the "Untrusted
-# repository" confirmation.
-# Verify: already trusted? Then skip.
+# -----------------------------------------------------------------------------
+# 6. Windows Update (verify only)
+# -----------------------------------------------------------------------------
+
+# Scan for pending Windows updates through the built-in Windows Update
+# client API (Microsoft.Update.Session). The scan is read-only: nothing is
+# approved, downloaded or installed - approving an update is what lets the
+# Windows Update client install it later on its own.
 #
-# @example
-#   Set-PSGalleryTrusted
-function Set-PSGalleryTrusted {
-    if ((Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue).InstallationPolicy -eq 'Trusted') {
-        Write-Host "==> PSGallery already trusted; skipping."
-        return
-    }
-
-    Write-Host "==> Trusting the PSGallery repository..."
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-}
-
-# Make sure PSWindowsUpdate and its prerequisites are available.
-#
-# @example
-#   Initialize-WindowsUpdate
-function Initialize-WindowsUpdate {
-    # PowerShellGet blocks on a provider prompt when NuGet is missing;
-    # install it up front so bootstrap never stops mid-run for it.
-    $nuget = @(Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue |
-        Where-Object { $_.Version -ge [version]'2.8.5.201' })
-    if ($nuget.Count -eq 0) {
-        Write-Host "==> Installing NuGet package provider..."
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction Stop | Out-Null
-    }
-
-    # Avoid the "Untrusted repository" confirmation from Install-Module.
-    Set-PSGalleryTrusted
-
-    if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
-        Write-Host "==> Installing PSWindowsUpdate module..."
-        Install-Module PSWindowsUpdate -Force -Scope CurrentUser -ErrorAction Stop
-    }
-    Import-Module PSWindowsUpdate -ErrorAction Stop
-}
-
-# Scan for pending updates. Get-WindowsUpdate can hand back a nested array;
-# re-emitting each element flattens it to one update each.
-#
-# @return {object[]} Pending updates.
+# @return {object[]} Pending updates with Title, Size (bytes), KB,
+#                   Mandatory and Downloaded.
 # @example
 #   Get-PendingWindowsUpdates
 function Get-PendingWindowsUpdates {
-    return @(Get-WindowsUpdate -ErrorAction Stop | ForEach-Object { $_ })
+    $session = $null
+    $searcher = $null
+    $result = $null
+
+    try {
+        $session = New-Object -ComObject Microsoft.Update.Session
+        $searcher = $session.CreateUpdateSearcher()
+        # IsInstalled=0 - not on the machine yet; IsHidden=0 - the ones the
+        # user should see.
+        $result = $searcher.Search('IsInstalled=0 and IsHidden=0')
+    } catch {
+        Write-Host "==> Windows Update scan failed: $($_.Exception.Message)"
+        return @()
+    }
+
+    $updates = @()
+    foreach ($update in @($result.Updates)) {
+        $kb = @()
+        try { $kb = @($update.KBArticleIDs) } catch { $kb = @() }
+
+        # MaxDownloadSize is a 32-bit ULONG. Reading it through the COM
+        # binder can carry junk in the upper bits, so the value is masked
+        # back to 32 bits. An implausible size is dropped - the stage
+        # reports the update, not a wrong number.
+        $size = 0
+        try {
+            $raw = [int64]$update.MaxDownloadSize
+            if ($raw -gt 4294967295) { $raw = $raw % 4294967296 }   # low 32 bits
+            if ($raw -gt 0 -and $raw -le 53687091200) { $size = $raw }  # 50 GB
+        } catch {
+            $size = 0
+        }
+
+        $updates += [pscustomobject]@{
+            Title      = "$($update.Title)"
+            Size       = $(if ($size -gt 0) { $size } else { $null })
+            KB         = ($kb -join ', ')
+            Mandatory  = [bool]$update.IsMandatory
+            Downloaded = [bool]$update.IsDownloaded
+        }
+
+        Release-Com $update
+    }
+
+    Release-Com $result
+    Release-Com $searcher
+    Release-Com $session
+
+    return $updates
 }
 
-# Format the size of a pending update for display.
-# PSWindowsUpdate reports Size as a unit-suffixed string ("44MB", "1GB");
-# older builds returned a byte count, sometimes as an array.
+# Normalize the size of a pending update to MB.
+# The update client reports the size in different shapes ('44MB', a raw
+# byte count, an array of both); an unknown shape returns $null so the
+# caller can fall back to the raw value.
 #
-# @param {object} Update - Update object from Get-WindowsUpdate.
-# @return {string} Size in MB, the raw value when unknown, or '' when absent.
+# @param {object} Update - Update object.
+# @return {double} Size in MB, or $null when the shape is unknown.
 # @example
-#   Format-UpdateSize -Update $update
-function Format-UpdateSize {
+#   Get-UpdateSizeMb -Update $update
+function Get-UpdateSizeMb {
     param([Parameter(Mandatory)]$Update)
 
     $parts = @($Update.Size) | Where-Object { $_ -ne $null -and "$_" -ne '' }
-    if ($parts.Count -eq 0) { return '' }
+    if ($parts.Count -eq 0) { return $null }
 
     $unitMb = @{ B = 1.0 / 1MB; KB = 1KB / 1MB; MB = 1.0; GB = 1024.0 }
     $sum = 0.0
@@ -619,11 +637,50 @@ function Format-UpdateSize {
             continue
         }
 
-        # Unknown format - show the raw value instead of guessing.
-        return "$($parts -join ', ')"
+        # Unknown format - the caller shows the raw value instead.
+        return $null
     }
 
-    return ('{0:N1} MB' -f $sum)
+    return $sum
+}
+
+# Format the size of a pending update for display.
+# Sizes arrive in different shapes (a unit-suffixed string like "44MB", a
+# raw byte count, an array of both); an unknown format is printed as-is.
+#
+# @param {object} Update - Update object.
+# @return {string} Size in MB, the raw value when unknown, or '' when absent.
+# @example
+#   Format-UpdateSize -Update $update
+function Format-UpdateSize {
+    param([Parameter(Mandatory)]$Update)
+
+    $mb = Get-UpdateSizeMb -Update $Update
+    if ($null -ne $mb) { return ('{0:N1} MB' -f $mb) }
+
+    $parts = @($Update.Size) | Where-Object { $_ -ne $null -and "$_" -ne '' }
+    if ($parts.Count -eq 0) { return '' }
+
+    # Unknown format - show the raw value instead of guessing.
+    return "$($parts -join ', ')"
+}
+
+# Sum the sizes of the pending updates.
+#
+# @param {object[]} Updates - Pending updates.
+# @return {double} Total size in MB.
+# @example
+#   Get-UpdateSizeTotal -Updates $updates
+function Get-UpdateSizeTotal {
+    param([Parameter(Mandatory)][object[]]$Updates)
+
+    $total = 0.0
+    foreach ($update in $Updates) {
+        $mb = Get-UpdateSizeMb -Update $update
+        if ($null -ne $mb) { $total += $mb }
+    }
+
+    return $total
 }
 
 # Print the pending updates.
@@ -637,69 +694,81 @@ function Show-PendingUpdates {
     Write-Host "==> $($Updates.Count) update(s) pending:"
     foreach ($update in $Updates) {
         $size = Format-UpdateSize -Update $update
+        $kb = ''
+        if ($null -ne $update.KB -and "$($update.KB)" -ne '') { $kb = " (KB $($update.KB))" }
+
         if ($size) {
-            Write-Host ("==>   - {0} ({1})" -f $update.Title, $size)
+            Write-Host ("==>   - {0}{1} ({2})" -f $update.Title, $kb, $size)
         } else {
-            Write-Host ("==>   - {0}" -f $update.Title)
+            Write-Host ("==>   - {0}{1}" -f $update.Title, $kb)
         }
     }
 }
 
-# Apply Windows updates via the PSWindowsUpdate module (best effort).
-# Scans first: when nothing is pending the stage is skipped, since updates
-# require a reboot afterwards. One scan, one install pass - the Windows
-# Update service handles the downloading itself.
+# Verify whether Windows is up to date and report the result.
+# Nothing is installed: the stage never approves, downloads or installs an
+# update, not even in unattended mode. Pending updates are left to the user
+# - the Windows Update settings page is opened for them.
+# Verify: the scan reports no pending updates? Then Windows is up to date.
 #
 # @example
-#   Update-Windows
-function Update-Windows {
+#   Test-WindowsUpdates
+function Test-WindowsUpdates {
     Write-Host "==> Checking Windows updates..."
 
-    try {
-        Initialize-WindowsUpdate
-
-        $updates = @(Get-PendingWindowsUpdates)
-        if ($updates.Count -eq 0) {
-            Write-Host "==> Windows is already up to date; skipping update (no reboot needed)."
-            return
+    if ($SkipUpdateCheck) {
+        Write-Host "==> Windows update check skipped (-SkipUpdateCheck)."
+        $script:UpdateCheckResult = @{
+            checkedAt     = (Get-Date).ToString('o')
+            skipped       = $true
+            upToDate      = $null
+            pendingCount  = $null
+            pendingSizeMb = $null
         }
+        return
+    }
 
-        Show-PendingUpdates -Updates $updates
+    $updates = @(Get-PendingWindowsUpdates)
 
-        # Installing means a reboot later - let the user decide.
-        if (-not (Confirm-Step "Install these updates now? (a reboot will be needed)")) {
-            Write-Host "==> Windows update skipped by user; continuing without installing updates."
-            return
+    if ($updates.Count -eq 0) {
+        Write-Host "==> Windows is up to date; no pending updates."
+        $script:UpdateCheckResult = @{
+            checkedAt     = (Get-Date).ToString('o')
+            skipped       = $false
+            upToDate      = $true
+            pendingCount  = 0
+            pendingSizeMb = 0
         }
+        return
+    }
 
-        # One serial pass downloads and installs the pending updates.
-        # Installs stay serial: CBS/TrustedInstaller allows one at a time.
-        Get-WindowsUpdate -Install -AcceptAll -IgnoreReboot
-        Write-Host "==> Windows update finished. Reboot required to finish installing updates."
-    } catch {
-        Write-Host "==> Windows update skipped: $($_.Exception.Message)"
+    Show-PendingUpdates -Updates $updates
+
+    $totalMb = Get-UpdateSizeTotal -Updates $updates
+    Write-Host ("==> {0} update(s) pending ({1:N1} MB); installing them is left to Windows Update." -f $updates.Count, $totalMb)
+
+    $script:UpdateCheckResult = @{
+        checkedAt     = (Get-Date).ToString('o')
+        skipped       = $false
+        upToDate      = $false
+        pendingCount  = $updates.Count
+        pendingSizeMb = [math]::Round($totalMb, 1)
+    }
+
+    # Hand the job to the user: the Windows Update page does the installing.
+    if (-not $Unattended) {
+        try {
+            Start-Process $Config.UpdateSettings -ErrorAction Stop
+            Write-Host "==> Windows Update opened ($($Config.UpdateSettings)); install the updates there."
+        } catch {
+            Write-Host "==> Could not open the Windows Update page: $($_.Exception.Message)"
+        }
     }
 }
 
 # -----------------------------------------------------------------------------
-# Windows Defender
+# 7. Windows Defender
 # -----------------------------------------------------------------------------
-
-# Ask the user to confirm a Defender step.
-#
-# @param {string} Question - Prompt text.
-# @return {bool} True when confirmed.
-# @example
-#   Confirm-DefenderStep "Real-time protection turned off?"
-function Confirm-DefenderStep {
-    param([Parameter(Mandatory)][string]$Question)
-
-    if ($Unattended) {
-        Write-Host "==> (unattended) auto-confirming: $Question"
-        return $true
-    }
-    return ((Read-Host "$Question (y/N)") -eq 'y')
-}
 
 # Read the Windows Security toggles the ReviOS playbook requires off. The
 # wizard checks the four toggles on Virus & threat protection > Manage
@@ -735,62 +804,8 @@ function Get-DefenderTogglesOn {
     return $on.ToArray()
 }
 
-# Turn off Tamper Protection through the platform.
-#
-# Both routes fail while the platform protects the key - the module switch
-# answers with 0x80004001 and the registry write with "access not allowed".
-# The caller falls back to the Windows Security UI.
-#
-# @return {bool} True when the platform accepted the change.
-# @example
-#   Set-TamperProtectionOff
-function Set-TamperProtectionOff {
-    # Route 1 - the Defender module switch.
-    try {
-        Set-MpPreference -DisableTamperProtection $true -ErrorAction Stop
-        Write-Host "==> Tamper Protection switched off (module)."
-        return $true
-    } catch {
-        Write-Host "==> Tamper Protection module switch failed: $($_.Exception.Message)"
-    }
-
-    # Route 2 - the registry value.
-    $path = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features'
-    try {
-        if (-not (Test-Path $path)) {
-            New-Item -Path $path -Force -ErrorAction Stop | Out-Null
-        }
-        # No -Type here: Set-ItemProperty infers REG_DWORD from the integer.
-        Set-ItemProperty -Path $path -Name 'TamperProtection' -Value 0 -ErrorAction Stop
-        Write-Host "==> Tamper Protection switched off (registry)."
-        return $true
-    } catch {
-        Write-Host "==> Tamper Protection registry write failed: $($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Write the policy flags the ReviOS playbook checks for, so the protections
-# stay off after a Defender update re-enables them.
-#
-# @example
-#   Set-DefenderPolicy
-function Set-DefenderPolicy {
-    $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
-    if (-not (Test-Path $policy)) {
-        New-Item -Path $policy -Force -ErrorAction SilentlyContinue | Out-Null
-    }
-    Set-ItemProperty -Path $policy -Name 'DisableAntiSpyware' -Value 1 -ErrorAction SilentlyContinue
-
-    $rtPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
-    if (-not (Test-Path $rtPolicy)) {
-        New-Item -Path $rtPolicy -Force -ErrorAction SilentlyContinue | Out-Null
-    }
-    Set-ItemProperty -Path $rtPolicy -Name 'DisableRealtimeMonitoring' -Value 1 -ErrorAction SilentlyContinue
-}
-
 # Open the Windows Security page that holds the Defender toggles, so the
-# user can turn off what the platform refuses to let a script touch.
+# user can turn them off by hand.
 #
 # @return {bool} True when a page was opened.
 # @example
@@ -810,49 +825,42 @@ function Show-DefenderSettings {
     return $false
 }
 
-# Turn off the Defender protections the platform allows.
+# Turn Defender off: verify, then hand the toggles to the user.
+# Nothing is written - Tamper Protection refuses every scripted change
+# (`Set-MpPreference` answers 0x80004001, the registry write answers
+# "access not allowed"), so the stage opens Windows Security, waits for
+# the toggles to go off and re-checks (max 3 rounds, 1 when unattended).
 # Verify: all four Windows Security toggles already off? Then skip.
 #
+# @return {bool} True when every toggle is off afterwards.
 # @example
 #   Disable-Defender
 function Disable-Defender {
-    # Verify: already disabled? Then skip.
-    if (@(Get-DefenderTogglesOn).Count -eq 0) {
+    # Verify: already off? Then skip.
+    if (Test-DefenderOff) {
         Write-Host '==> Defender toggles already off; skipping.'
-        return
+        return $true
     }
 
-    # Tamper Protection blocks every preference write - try to release it
-    # first, but expect to do it by hand.
-    if (@(Get-DefenderTogglesOn) -contains 'Tamper protection') {
-        Write-Host '==> Tamper Protection is on; trying to release it...'
-        $null = Set-TamperProtectionOff
+    $attempts = if ($Unattended) { 1 } else { 3 }
+
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        $on = @(Get-DefenderTogglesOn)
+        if ($on.Count -eq 0) { return $true }
+
+        Write-Host "==> Still on: $($on -join ', ')"
+        Write-Host '==> Turn them off in Windows Security > Virus & threat protection > Manage settings (Tamper protection first).'
+        $null = Show-DefenderSettings
+        if (-not (Confirm-Step 'Turn off the toggles above in Windows Security, then continue?')) { break }
     }
 
-    try {
-        # Every toggle on the ReviOS checklist: real-time, behaviour/IOAV,
-        # cloud-delivered (block at first sight + MAPS) and sample submission.
-        Set-MpPreference -DisableRealtimeMonitoring $true `
-            -DisableBehaviorMonitoring $true `
-            -DisableIOAVProtection $true `
-            -DisableBlockAtFirstSeen $true `
-            -MAPSReporting Disabled `
-            -SubmitSamplesConsent NeverSend `
-            -ErrorAction Stop
-    } catch {
-        Write-Host "==> Could not disable Defender protections: $($_.Exception.Message)"
+    if (Test-DefenderOff) {
+        Write-Host '==> Defender toggles are off.'
+        return $true
     }
 
-    # Policy keys the ReviOS playbook checks for.
-    Set-DefenderPolicy
-
-    # The platform can accept the call and keep the protection on (Tamper
-    # Protection does exactly that) - report what is actually off.
-    if (@(Get-DefenderTogglesOn) -contains 'Real-time protection') {
-        Write-Host '==> Real-time protection is still on; the platform rejected the change.'
-    } else {
-        Write-Host '==> Defender protections disabled.'
-    }
+    Write-Host '==> Defender toggles still on.'
+    return $false
 }
 
 # Verify that every toggle the playbook needs is off.
@@ -864,26 +872,9 @@ function Test-DefenderOff {
     return (@(Get-DefenderTogglesOn).Count -eq 0)
 }
 
-# Hand the remaining toggles to the user: open Windows Security, wait for
-# the toggles to go off and check again (max 3 rounds).
-#
-# @return {bool} True when every toggle is off afterwards.
-# @example
-#   Resolve-DefenderManually
-function Resolve-DefenderManually {
-    $attempts = if ($Unattended) { 1 } else { 3 }
-
-    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
-        $on = @(Get-DefenderTogglesOn)
-        if ($on.Count -eq 0) { return $true }
-
-        Write-Host "==> Still on: $($on -join ', ')"
-        $null = Show-DefenderSettings
-        if (-not (Confirm-DefenderStep 'Turn off the toggles above in Windows Security, then continue?')) { break }
-    }
-
-    return (Test-DefenderOff)
-}
+# -----------------------------------------------------------------------------
+# 8. Debloat
+# -----------------------------------------------------------------------------
 
 # Download + verify the ReviOS playbook, disable Defender and apply it
 # headlessly with the TrustedUninstaller CLI.
@@ -910,11 +901,10 @@ function Invoke-Debloat {
             throw "Playbook artifact is missing or empty."
         }
 
-        # Defender must be off before the playbook is applied: the scriptable
-        # part runs first, whatever the platform keeps on is handed to the
-        # user in the Windows Security window.
-        Disable-Defender
-        if (-not (Resolve-DefenderManually)) {
+        # Defender must be off before the playbook is applied: the playbook
+        # refuses to run against a protected machine. Nothing is scripted -
+        # the stage opens Windows Security and waits for the four toggles.
+        if (-not (Disable-Defender)) {
             $togglesOn = @(Get-DefenderTogglesOn)
             throw "Debloat blocked: Windows Security toggles still on: $($togglesOn -join ', '). Turn them off and re-run."
         }
@@ -937,6 +927,10 @@ function Invoke-Debloat {
     Complete-Stage 'debloat'
     Write-Host "==> Debloat complete."
 }
+
+# -----------------------------------------------------------------------------
+# 9. Drivers
+# -----------------------------------------------------------------------------
 
 # List the present devices that are not healthy.
 #
@@ -1029,6 +1023,10 @@ function Invoke-Drivers {
     Write-Host "==> Driver installation complete."
 }
 
+# -----------------------------------------------------------------------------
+# 10. Profile
+# -----------------------------------------------------------------------------
+
 # Check whether the profile is already a symlink to the given source.
 #
 # @param {string} Path   - Profile path.
@@ -1100,7 +1098,7 @@ function Complete-Bootstrap {
 }
 
 # -----------------------------------------------------------------------------
-# Entry point
+# 11. Entry point
 # -----------------------------------------------------------------------------
 
 # Entry point: run each stage in order and handle failures.
@@ -1114,7 +1112,7 @@ function main {
         Initialize-Environment
         Initialize-Scoop
         Initialize-Winget
-        Update-Windows
+        Test-WindowsUpdates
         Invoke-Debloat
         Invoke-Drivers
         Complete-Bootstrap

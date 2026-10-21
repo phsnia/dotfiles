@@ -1,6 +1,8 @@
 # Plan: Simple Windows Update stage
 
-Status: implemented
+Status: superseded by `verify-windows-update.md` (the stage verifies and
+reports only — installing was removed, and the scan moved to the built-in
+Windows Update client API, so the PSWindowsUpdate pre-flight went away too).
 
 ## Goal
 

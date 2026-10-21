@@ -16,6 +16,7 @@ Describe "install-software (Pester)" {
         if ($parseErrors) { throw "Parse errors in install-software.ps1: $parseErrors" }
         $functions = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)
         foreach ($fn in $functions) { Invoke-Expression $fn.Extent.Text }
+        . (Join-Path $winRoot 'lib\common.ps1')
     }
 
     BeforeEach {

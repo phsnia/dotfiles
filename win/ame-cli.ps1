@@ -12,17 +12,10 @@
 #   . .\ame-cli.ps1
 #   Invoke-ReviCli
 
-# Fallback so the file also works standalone (bootstrap already defines a
-# richer version of this).
+# The shared helpers (Get-RemoteFile, Test-Artifact) live in lib/common.ps1.
+# Load them when they are not defined yet, so this file also works alone.
 if (-not (Get-Command Get-RemoteFile -ErrorAction SilentlyContinue)) {
-    function Get-RemoteFile {
-        param([Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)][string]$Directory)
-        $output = Join-Path $Directory (Split-Path $Url -Leaf)
-        if (Test-Path $output) { return $output }
-        curl.exe -L $Url -o $output
-        if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
-        return $output
-    }
+    . (Join-Path $PSScriptRoot 'lib\common.ps1')
 }
 
 # Default downloads location.

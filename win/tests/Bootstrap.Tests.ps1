@@ -1,4 +1,4 @@
-# Bootstrap.Tests.ps1 - Pester tests for bootstrap.ps1
+﻿# Bootstrap.Tests.ps1 - Pester tests for bootstrap.ps1
 #
 # Covers the bootstrap stages (environment, scoop, winget, updates, drivers,
 # profile link) plus the debloat flow that used to live in Debloat.Tests.ps1.
@@ -18,6 +18,7 @@ Describe "bootstrap (Pester)" {
         if ($parseErrors) { throw "Parse errors in bootstrap.ps1: $parseErrors" }
         $functions = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)
         foreach ($fn in $functions) { Invoke-Expression $fn.Extent.Text }
+        . (Join-Path $winRoot 'lib\common.ps1')
         . $ameCli
 
         # Complete-Bootstrap uses $PSScriptRoot, which is empty in AST-loaded
@@ -29,6 +30,8 @@ Describe "bootstrap (Pester)" {
         # Stubs so Pester can mock commands that may not exist on this host.
         # The parameters must mirror the real cmdlets: Pester -ParameterFilter
         # only sees bound parameters, so a bare stub would swallow -Install.
+        # Both stay mocked so the tests can prove the update check never
+        # reaches for a Windows Update module or installs anything.
         function Get-WindowsUpdate {
             param(
                 [switch]$Install,
@@ -54,10 +57,13 @@ Describe "bootstrap (Pester)" {
             CliStandalone = 'https://example.invalid/CLI-Standalone.zip'
             MsiCenter     = 'https://example.invalid/MSI-Center.zip'
             NvidiaDriver  = 'https://example.invalid/nvidia.exe'
+            UpdateSettings = 'ms-settings:windowsupdate'
         }
         $script:ProfilePath = Join-Path $script:TempRoot 'profile.ps1'
         $script:ProfilePathExplicit = $true   # tests pass -ProfilePath explicitly
         $script:Unattended = $true   # main must not pause in tests
+        $script:SkipUpdateCheck = $false
+        $script:UpdateCheckResult = $null
 
         # Shared prompt state
         $script:Asked = [System.Collections.Generic.List[string]]::new()
@@ -112,9 +118,15 @@ Describe "bootstrap (Pester)" {
             Get-Command Repair-Winget -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Update-SessionPath -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Get-DefenderTogglesOn -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Set-DefenderPolicy -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Set-PSGalleryTrusted -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Update-Windows -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            Get-Command Disable-Defender -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            # The Defender stage is manual: the scripted helpers are gone.
+            Get-Command Set-DefenderPolicy -ErrorAction SilentlyContinue | Should BeNullOrEmpty
+            Get-Command Set-TamperProtectionOff -ErrorAction SilentlyContinue | Should BeNullOrEmpty
+            Get-Command Resolve-DefenderManually -ErrorAction SilentlyContinue | Should BeNullOrEmpty
+            Get-Command Test-WindowsUpdates -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            Get-Command Get-PendingWindowsUpdates -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            Get-Command Get-UpdateSizeMb -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            Get-Command Get-UpdateSizeTotal -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Format-UpdateSize -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Invoke-Debloat -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Invoke-Drivers -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
@@ -223,26 +235,19 @@ Describe "bootstrap (Pester)" {
         }
     }
 
-    Context "Set-PSGalleryTrusted" {
-        It "does not touch Set-PSRepository when PSGallery is already trusted" {
-            Mock -CommandName Get-PSRepository -MockWith { [pscustomobject]@{ Name = 'PSGallery'; InstallationPolicy = 'Trusted' } }
-            Mock -CommandName Set-PSRepository -MockWith {}
-
-            Set-PSGalleryTrusted
-
-            Assert-MockCalled Set-PSRepository -Times 0 -Exactly -Scope It
-        }
-    }
-
-    Context "Update-Windows" {
+    Context "Windows update check" {
         BeforeEach {
-            # Note: Get-Module is deliberately NOT mocked - Pester 3.4 breaks
-            # when it is mocked. PSWindowsUpdate is simply not installed here.
-            Mock -CommandName Install-Module -MockWith {}
-            Mock -CommandName Import-Module -MockWith {}
-            # Keep the NuGet/PSGallery pre-flight from touching the real system.
-            Mock -CommandName Get-PackageProvider -MockWith { [pscustomobject]@{ Name = 'NuGet'; Version = [version]'2.8.5.201' } }
-            Mock -CommandName Set-PSGalleryTrusted -MockWith {}
+            # Pester 3.4 leaks Test-Path/Set-Content mocks from earlier
+            # contexts; re-pin them to real filesystem behavior here.
+            Mock -CommandName Test-Path -MockWith { param($Path) [System.IO.File]::Exists("$Path") -or [System.IO.Directory]::Exists("$Path") }
+            Mock -CommandName Set-Content -MockWith { param($Path, $Value) [System.IO.File]::WriteAllText("$Path", "$Value") }
+
+            $script:UpdateCheckResult = $null
+            $script:Started = [System.Collections.Generic.List[string]]::new()
+
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith { @() }
+            Mock -CommandName Show-PendingUpdates -MockWith {}
+            Mock -CommandName Start-Process -MockWith { param($FilePath) $script:Started.Add("$FilePath") }
             Mock -CommandName Confirm-Step -MockWith {
                 param($Question)
                 $script:Asked.Add($Question)
@@ -250,115 +255,104 @@ Describe "bootstrap (Pester)" {
             }
         }
 
-        It "installs the NuGet provider when it is missing" {
-            Mock -CommandName Get-PackageProvider -MockWith { $null }
-            Mock -CommandName Install-PackageProvider -MockWith {}
-            Mock -CommandName Get-WindowsUpdate -MockWith { @() }
+        It "reports up to date when nothing is pending" {
+            Test-WindowsUpdates
 
-            Update-Windows
-
-            Assert-MockCalled Install-PackageProvider -Times 1 -Exactly -Scope It
+            $script:UpdateCheckResult.upToDate | Should Be $true
+            $script:UpdateCheckResult.pendingCount | Should Be 0
         }
 
-        It "runs the PSGallery trust pre-flight" {
-            Mock -CommandName Get-WindowsUpdate -MockWith { @() }
-
-            Update-Windows
-
-            Assert-MockCalled Set-PSGalleryTrusted -Times 1 -Exactly -Scope It
-        }
-
-        It "installs nothing when no updates are pending" {
-            Mock -CommandName Get-WindowsUpdate -MockWith { @() }
-
-            Update-Windows
-
-            Assert-MockCalled Get-WindowsUpdate -Times 0 -Exactly -Scope It -ParameterFilter { $Install }
-        }
-
-        It "handles updates that arrive as a nested array" {
-            # Get-WindowsUpdate returned its single result as one Object[] on
-            # a real run, which crashed the size formatting ($update.Size / 1MB).
-            Mock -CommandName Get-WindowsUpdate -MockWith {
-                ,(@(
-                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
-                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
-                ))
-            }
-            $script:AnswerQueue.Enqueue($false)
-
-            { Update-Windows } | Should Not Throw
-
-            $script:Asked.Count | Should Be 1
-        }
-
-        It "handles update sizes that arrive as an array" {
-            Mock -CommandName Get-WindowsUpdate -MockWith {
-                [pscustomobject]@{ Title = 'Update X'; Size = @(1048576, 524288) }
-            }
-            $script:AnswerQueue.Enqueue($false)
-
-            { Update-Windows } | Should Not Throw
-
-            $script:Asked.Count | Should Be 1
-        }
-
-        It "formats unit-suffixed update sizes like '44MB'" {
-            Mock -CommandName Get-WindowsUpdate -MockWith {
-                [pscustomobject]@{ Title = 'Malicious Software Removal Tool'; Size = '44MB' }
-            }
-            $script:AnswerQueue.Enqueue($false)
-
-            { Update-Windows } | Should Not Throw
-
-            $script:Asked.Count | Should Be 1
-        }
-
-        It "installs nothing when the user declines" {
-            Mock -CommandName Get-WindowsUpdate -MockWith { @( [pscustomobject]@{ Title = 'Update X'; Size = 10MB } ) }
-            $script:AnswerQueue.Enqueue($false)
-
-            Update-Windows
-
-            $script:Asked.Count | Should Be 1
-            Assert-MockCalled Get-WindowsUpdate -Times 0 -Exactly -Scope It -ParameterFilter { $Install }
-        }
-
-        It "scans once and installs once" {
-            Mock -CommandName Get-WindowsUpdate -MockWith {
+        It "reports the pending updates without installing them" {
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith {
                 @(
-                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
-                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
+                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576; KB = '1234'; Mandatory = $false; Downloaded = $false },
+                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152; KB = '5678'; Mandatory = $false; Downloaded = $false }
                 )
             }
 
-            Update-Windows
+            Test-WindowsUpdates
 
-            # One scan to report, one install pass to apply - nothing else.
-            Assert-MockCalled Get-WindowsUpdate -Times 2 -Exactly -Scope It
-            Assert-MockCalled Get-WindowsUpdate -Times 1 -Exactly -Scope It -ParameterFilter { $Install }
+            $script:UpdateCheckResult.upToDate | Should Be $false
+            $script:UpdateCheckResult.pendingCount | Should Be 2
+            $script:UpdateCheckResult.pendingSizeMb | Should Be 3
+            Assert-MockCalled Show-PendingUpdates -Times 1 -Exactly -Scope It
         }
 
-        It "installs in a single pass after the scan" {
-            $script:UpdateOrder = [System.Collections.Generic.List[string]]::new()
-            Mock -CommandName Get-WindowsUpdate -MockWith {
-                param([switch]$Install)
-                if ($Install -or $PSBoundParameters.ContainsKey('Install')) {
-                    $script:UpdateOrder.Add('install')
-                    return
-                }
-                $script:UpdateOrder.Add('scan')
-                @(
-                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
-                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
-                )
+        It "never installs an update" {
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith {
+                @( [pscustomobject]@{ Title = 'Update X'; Size = 1048576; KB = '1234'; Mandatory = $false; Downloaded = $false } )
+            }
+            # Declared so the assertions below can prove none of them ran.
+            Mock -CommandName Get-WindowsUpdate -MockWith { }
+            Mock -CommandName Install-Module -MockWith { }
+            Mock -CommandName Install-PackageProvider -MockWith { }
+            Mock -CommandName Set-PSRepository -MockWith { }
+
+            Test-WindowsUpdates
+
+            # No install path at all: not the module, not the cmdlet, and no
+            # package provider or repository is touched either.
+            Assert-MockCalled Get-WindowsUpdate -Times 0 -Exactly -Scope It
+            Assert-MockCalled Install-Module -Times 0 -Exactly -Scope It
+            Assert-MockCalled Install-PackageProvider -Times 0 -Exactly -Scope It
+            Assert-MockCalled Set-PSRepository -Times 0 -Exactly -Scope It
+        }
+
+        It "never asks the user to install the updates" {
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith {
+                @( [pscustomobject]@{ Title = 'Update X'; Size = 1048576; KB = '1234'; Mandatory = $false; Downloaded = $false } )
             }
 
-            Update-Windows
+            Test-WindowsUpdates
 
-            ($script:UpdateOrder -join '>') | Should Be 'scan>install'
+            $script:Asked.Count | Should Be 0
+            Assert-MockCalled Confirm-Step -Times 0 -Exactly -Scope It
+        }
+
+        It "opens the Windows Update page for the user" {
+            $script:Unattended = $false
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith {
+                @( [pscustomobject]@{ Title = 'Update X'; Size = 1048576; KB = '1234'; Mandatory = $false; Downloaded = $false } )
+            }
+
+            Test-WindowsUpdates
+
+            $script:Started.Count | Should Be 1
+            $script:Started[0] | Should Match 'windowsupdate'
+        }
+
+        It "does not open the Windows Update page when unattended" {
+            $script:Unattended = $true
+            Mock -CommandName Get-PendingWindowsUpdates -MockWith {
+                @( [pscustomobject]@{ Title = 'Update X'; Size = 1048576; KB = '1234'; Mandatory = $false; Downloaded = $false } )
+            }
+
+            Test-WindowsUpdates
+
+            $script:Started.Count | Should Be 0
+        }
+
+        It "skips the check when -SkipUpdateCheck is passed" {
+            $script:SkipUpdateCheck = $true
+
+            Test-WindowsUpdates
+
+            Assert-MockCalled Get-PendingWindowsUpdates -Times 0 -Exactly -Scope It
+            $script:UpdateCheckResult.skipped | Should Be $true
+        }
+
+        It "records the check result in the state file" {
+            Test-WindowsUpdates
+
+            Save-CompletionState
+
+            Test-Path $Config.StateFile | Should Be $true
+            $state = Get-Content $Config.StateFile -Raw | ConvertFrom-Json
+            $state.windowsUpdate.upToDate | Should Be $true
+            $state.windowsUpdate.pendingCount | Should Be 0
         }
     }
+
 
     Context "Format-UpdateSize" {
         It "formats unit-suffixed sizes" {
@@ -378,6 +372,26 @@ Describe "bootstrap (Pester)" {
         }
     }
 
+    Context "Get-UpdateSizeTotal" {
+        It "adds up the sizes of the pending updates" {
+            $updates = @(
+                [pscustomobject]@{ Title = 'Update A'; Size = 1048576 }
+                [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
+            )
+
+            Get-UpdateSizeTotal -Updates $updates | Should Be 3
+        }
+
+        It "ignores updates without a size" {
+            $updates = @(
+                [pscustomobject]@{ Title = 'Update A'; Size = 1048576 }
+                [pscustomobject]@{ Title = 'Update B'; Size = $null }
+            )
+
+            Get-UpdateSizeTotal -Updates $updates | Should Be 1
+        }
+    }
+
     Context "Invoke-Drivers" {
         It "skips driver downloads when all devices are healthy" {
             Mock -CommandName Get-CimInstance -MockWith { [pscustomobject]@{ Manufacturer = 'MSI'; Model = 'Prestige' } }
@@ -393,26 +407,32 @@ Describe "bootstrap (Pester)" {
 
     Context "Disable-Defender" {
         BeforeEach {
+            $script:SettingsShown = 0
+            Mock -CommandName Show-DefenderSettings -MockWith { $script:SettingsShown++ }
+            Mock -CommandName Confirm-Step -MockWith {}
             Mock -CommandName Set-MpPreference -MockWith {}
-            Mock -CommandName Set-DefenderPolicy -MockWith {}
         }
 
         It "skips when all toggles are already off" {
             Mock -CommandName Get-DefenderTogglesOn -MockWith { @() }
 
-            Disable-Defender
+            $ok = Disable-Defender
 
+            $ok | Should Be $true
+            $script:SettingsShown | Should Be 0
+            Assert-MockCalled Confirm-Step -Times 0 -Exactly -Scope It
             Assert-MockCalled Set-MpPreference -Times 0 -Exactly -Scope It
-            Assert-MockCalled Set-DefenderPolicy -Times 0 -Exactly -Scope It
         }
 
-        It "turns the protections off through the Defender helpers" {
+        It "hands the toggles to Windows Security and reports the result" {
             Mock -CommandName Get-DefenderTogglesOn -MockWith { @('Real-time protection') }
 
-            Disable-Defender
+            $ok = Disable-Defender
 
-            Assert-MockCalled Set-MpPreference -Times 1 -Exactly -Scope It
-            Assert-MockCalled Set-DefenderPolicy -Times 1 -Exactly -Scope It
+            $ok | Should Be $false
+            $script:SettingsShown | Should BeGreaterThan 0
+            # Manual by design: nothing is written to the platform.
+            Assert-MockCalled Set-MpPreference -Times 0 -Exactly -Scope It
         }
     }
 
@@ -482,7 +502,6 @@ Describe "bootstrap (Pester)" {
 
         It "blocks before the CLI when the Defender toggles stay on" {
             Mock -CommandName Get-DefenderTogglesOn -MockWith { @('Tamper protection') }
-            Mock -CommandName Set-DefenderPolicy -MockWith {}
 
             { Invoke-Debloat } | Should Throw
 
@@ -585,7 +604,7 @@ Describe "bootstrap (Pester)" {
             Mock -CommandName Initialize-Environment -MockWith { $script:Order.Add('Initialize-Environment') }
             Mock -CommandName Initialize-Scoop -MockWith { $script:Order.Add('Initialize-Scoop') }
             Mock -CommandName Initialize-Winget -MockWith { $script:Order.Add('Initialize-Winget') }
-            Mock -CommandName Update-Windows -MockWith { $script:Order.Add('Update-Windows') }
+            Mock -CommandName Test-WindowsUpdates -MockWith { $script:Order.Add('Test-WindowsUpdates') }
             Mock -CommandName Invoke-Debloat -MockWith { $script:Order.Add('Invoke-Debloat') }
             Mock -CommandName Invoke-Drivers -MockWith { $script:Order.Add('Invoke-Drivers') }
             Mock -CommandName Complete-Bootstrap -MockWith { $script:Order.Add('Complete-Bootstrap') }
@@ -594,7 +613,7 @@ Describe "bootstrap (Pester)" {
         It "runs every stage in order" {
             main
 
-            ($script:Order -join '>') | Should Be 'Start-Bootstrap>Assert-Administrator>Initialize-Environment>Initialize-Scoop>Initialize-Winget>Update-Windows>Invoke-Debloat>Invoke-Drivers>Complete-Bootstrap'
+            ($script:Order -join '>') | Should Be 'Start-Bootstrap>Assert-Administrator>Initialize-Environment>Initialize-Scoop>Initialize-Winget>Test-WindowsUpdates>Invoke-Debloat>Invoke-Drivers>Complete-Bootstrap'
         }
 
         It "saves recovery state when a stage fails" {

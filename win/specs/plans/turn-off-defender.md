@@ -1,30 +1,30 @@
-# Plan: Turn off Windows Defender
+# Plan: Turn off Windows Defender (simple manual way)
 
-Status: implemented, verified live and merged into `bootstrap.ps1` — the
-standalone script was removed after the merge.
+Status: implemented — scripted turn-off removed, the stage is read + open the
+UI + verify.
 
 ## Goal
 
-Turn off the Defender protections the ReviOS playbook needs and verify the
-result. The logic was first written as a standalone `win/turn-off-defender.ps1`
-and, once it was verified on a real machine, merged into `bootstrap.ps1`; the
-standalone script no longer exists.
+Turn off the Defender protections the ReviOS playbook needs, with the
+simplest thing that actually works: check the toggles, show them to the
+user, open Windows Security, wait, check again.
 
 Decisions:
 
-- **Verify first** — read the current Defender state, print it, and do
-  nothing when every toggle is already off.
-- **Scripted first, by hand for the rest** — the platform refuses to let a
-  script disable real-time protection while Tamper Protection is on
+- **Manual, not scripted.** The stage writes nothing — no `Set-MpPreference`,
+  no `DisableAntiSpyware` / real-time policy keys, no Tamper Protection
+  route. Tamper Protection refuses every scripted change while it is on
   (`Set-MpPreference` answers `0x80004001`, the registry write answers
-  "access not allowed"). The stage does everything the platform allows,
-  then opens Windows Security and waits for the user to flip the remaining
-  toggles; it re-checks after every round (max 3).
-- **Same knobs as the playbook checklist** — real-time, behavior/IOAV,
-  cloud-delivered (block at first sight + MAPS) and sample submission go off
-  through `Set-MpPreference`; `DisableAntiSpyware=1` plus the real-time
-  policy key are written so the protections stay off.
-- **No self-elevation** — the helpers live inside `bootstrap.ps1`, which
+  "access not allowed"), so the scripted part was dead weight on exactly the
+  machines that needed it, and a silent `SilentlyContinue` next to it on the
+  rest.
+- **Verify first** — read the four toggles (real-time, cloud-delivered,
+  sample submission, Tamper Protection), print nothing and do nothing when
+  they are already off.
+- **One function.** `Disable-Defender` is verify → hand over → verify;
+  `Resolve-DefenderManually` merged into it and `Set-TamperProtectionOff` /
+  `Set-DefenderPolicy` are deleted.
+- **No self-elevation** — the helper lives inside `bootstrap.ps1`, which
   already relaunches itself via RunAs.
 - **Gate, not a gatekeeper** — the debloat stage throws when a toggle is
   still on, so the TrustedUninstaller CLI never runs against a protected
@@ -34,87 +34,61 @@ Decisions:
 
 ### `win/bootstrap.ps1`
 
-1. The Defender helpers live in the "Windows Defender" section of
-   `bootstrap.ps1`:
-   - `Confirm-DefenderStep` — asks the user to confirm a Defender step
-     (`-Unattended` auto-confirms).
-   - `Get-DefenderTogglesOn` — the four toggles that are still on.
-   - `Set-TamperProtectionOff` — module switch, then registry.
-   - `Set-DefenderPolicy` — `DisableAntiSpyware` + real-time policy keys.
-   - `Show-DefenderSettings` — opens the Windows Security page.
-   - `Disable-Defender` — scripted part: release tamper protection, apply
-     `Set-MpPreference`, write the policy keys.
-   - `Test-DefenderOff` — verification check.
-   - `Resolve-DefenderManually` — opens Windows Security, waits for the
-     toggles to go off and re-checks (max 3 rounds).
-   - The old standalone entry points (`Assert-DefenderAdministrator`,
-     `Invoke-DefenderShutdown`) are gone — the bootstrap entry point replaces
-     them.
-2. `Invoke-Debloat` calls `Disable-Defender` and `Resolve-DefenderManually`
-   before the playbook is applied, and throws when a toggle is still on.
+1. Deleted `Set-TamperProtectionOff` (module switch, then registry) and
+   `Set-DefenderPolicy` (policy keys).
+2. `Disable-Defender` now returns a result: skip when everything is off,
+   otherwise print what is still on, print where the toggles live, open
+   Windows Security, wait for the user (`Confirm-Step`, max 3 rounds, 1 when
+   unattended) and return `Test-DefenderOff`. `Resolve-DefenderManually` is
+   gone.
+3. `Invoke-Debloat` calls `Disable-Defender` once and throws when it returns
+   `$false`, keeping the "Debloat blocked: Windows Security toggles still
+   on: …" message.
 
 ### `win/tests/Defender.Tests.ps1`
 
-3. Pester tests (Pester 3.4 style) with the Defender cmdlets mocked:
-   toggle detection (module preference and registry fallback), the two
-   tamper routes, the preference/policy writes, the Windows Security page
-   (both URLs), the skip-when-off path, the manual fallback path and the
-   final verification result. The helpers are loaded out of `bootstrap.ps1`
-   via AST (name-filtered).
+4. Loading list and assertions follow the four remaining helpers, and assert
+   the three deleted ones are gone.
+5. `Set-TamperProtectionOff` context removed; the scripted `Disable-Defender`
+   tests (checklist call, policy write, tamper release) and the separate
+   `Resolve-DefenderManually` context collapse into one `Disable-Defender`
+   context: skip when off, open + wait + report `$false`, return `$true` as
+   soon as the user flips the toggles, and a new **"never writes to the
+   platform"** test asserting `Set-MpPreference`, `Set-ItemProperty` and
+   `New-Item` are never called.
+6. `Bootstrap.Tests.ps1` — `Disable-Defender` context reworked the same way
+   (skip / hand over, no writes), the `Set-DefenderPolicy` mock in the
+   debloat tests is gone with the command, and the loading assertion checks
+   the deleted helpers stay deleted.
 
 ### `win/ARCHITECTURE.md`, `win/README.md`
 
-4. Document the Defender stage as part of the bootstrap.
+7. The Defender section describes the three-step manual flow and states that
+   no preference call or policy key sits behind it; README's "Turning
+   Defender off" says the stage is simple and manual.
 
 ## Verification
 
-1. Parse `bootstrap.ps1` and the test file with
+1. Parse `bootstrap.ps1`, `Bootstrap.Tests.ps1` and `Defender.Tests.ps1` with
    `[System.Management.Automation.Language.Parser]::ParseFile` — zero parse
    errors.
-2. `Invoke-Pester win\tests\Defender.Tests.ps1` — all tests pass.
-3. Live run (elevated, `-Unattended`) on this machine:
-
-   ```
-   ==> Still on: Real-time protection, Cloud-delivered protection, Automatic sample submission, Tamper protection
-   ==> Tamper Protection module switch failed: Operation failed with the following error: 0x80004001
-   ==> Tamper Protection registry write failed: Requested registry access is not allowed.
-   ==> Turn off Tamper Protection: Windows Security > Virus & threat protection > Manage settings.
-   ==> Real-time protection is still on; the platform rejected the change.
-   ==> Still on: Real-time protection, Tamper protection
-   === exit code: 1 ===
-   ```
-
-   The stage behaves as designed: it detects the blocker, tries both
-   programmatic routes, asks for the one thing only the UI can do, applies
-   everything else and reports the result honestly.
-
-4. Live run (elevated, interactive) after the user turned **Tamper
-   protection** off in Windows Security:
-
-   ```
-   ==> Still on: Real-time protection, Tamper protection
-   ==> Windows Security opened (ms-settings:windowsdefender).
-   ==> All Windows Security toggles are off.
-   === exit code: 0 ===
-   ```
-
-   `Get-MpComputerStatus` afterwards reports `RealTimeProtectionEnabled =
-   False` and `AntivirusEnabled = False`; `Get-MpPreference` answers
-   `0x800106ba` (the Defender platform is disabled).
-5. Integration: `Invoke-Pester win\tests` — all tests pass.
+2. Grep the `.ps1` files for `Set-TamperProtectionOff`, `Set-DefenderPolicy`,
+   `Resolve-DefenderManually` — only the negative `Should BeNullOrEmpty`
+   assertions remain.
+3. Run `Invoke-Pester .\tests` — 63 tests pass (69 before; 6 scripted tests
+   dropped, 1 manual guard added).
+4. Live behaviour unchanged where it matters: the stage detects the toggles,
+   opens Windows Security and reports honestly, and `Invoke-Debloat` still
+   blocks before the CLI while a toggle is on.
 
 ## Notes
 
-- Tamper Protection cannot be turned off by a script while the platform
-  protects it; the Windows Security UI is the only way, so the stage asks
-  and waits instead of hanging.
-- `Set-MpPreference -DisableTamperProtection $true` exists but fails with
-  `0x80004001` while tamper protection is active.
-- **Bug found in `bootstrap.ps1`**: `Set-DefenderPolicy` called
-  `Set-ItemProperty ... -Type DWord`. `Set-ItemProperty` has no `-Type`
-  parameter, so the write always failed - and `-ErrorAction SilentlyContinue`
-  swallowed the error, so the `DisableAntiSpyware` policy was never written.
-  The merged helper uses `Set-ItemProperty` without `-Type` (an integer value
-  produces a REG_DWORD).
+- The earlier scripted run on this machine never got past Tamper Protection:
+  `Tamper Protection module switch failed: 0x80004001`,
+  `Tamper Protection registry write failed: Requested registry access is
+  not allowed.` — the reason the manual path is now the only path.
+- Nothing keeps the toggles off across a Defender update anymore (the
+  removed policy keys did that); the ReviOS playbook replaces Defender, and
+  the stage re-checks before the playbook runs.
 - Turning the protections off lowers the machine's security posture; the
   ReviOS playbook is expected to replace Defender afterwards.

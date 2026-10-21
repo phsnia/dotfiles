@@ -1,4 +1,4 @@
-# Defender.Tests.ps1 - Pester tests for the Windows Defender stage
+﻿# Defender.Tests.ps1 - Pester tests for the Windows Defender stage
 #
 # The Defender cmdlets and the registry are mocked, so nothing on the
 # host is touched: the tests only prove the code reads the state, asks
@@ -13,14 +13,11 @@ Describe "windows defender (Pester)" {
         # The Defender helpers live in bootstrap.ps1 - load them via AST
         # (skips the entry point).
         $defenderFunctions = @(
-            'Confirm-DefenderStep'
+            'Confirm-Step'
             'Get-DefenderTogglesOn'
-            'Set-TamperProtectionOff'
-            'Set-DefenderPolicy'
             'Show-DefenderSettings'
             'Disable-Defender'
             'Test-DefenderOff'
-            'Resolve-DefenderManually'
         )
 
         $tokens = $null; $parseErrors = $null
@@ -32,6 +29,23 @@ Describe "windows defender (Pester)" {
             throw "Defender functions missing in bootstrap.ps1: found $($functions.Count) of $($defenderFunctions.Count)"
         }
         foreach ($fn in $functions) { Invoke-Expression $fn.Extent.Text }
+
+        # Pester builds its mock proxy from the parameters of the mocked
+        # command, and the Defender module does not expose
+        # -DisableTamperProtection on every build. A stub keeps the
+        # "never writes" assertion host-independent.
+        function Set-MpPreference {
+            [CmdletBinding()]
+            param(
+                [bool]$DisableTamperProtection,
+                [bool]$DisableRealtimeMonitoring,
+                [bool]$DisableBehaviorMonitoring,
+                [bool]$DisableIOAVProtection,
+                [bool]$DisableBlockAtFirstSeen,
+                [string]$MAPSReporting,
+                [string]$SubmitSamplesConsent
+            )
+        }
     }
 
     BeforeEach {
@@ -56,14 +70,14 @@ Describe "windows defender (Pester)" {
 
     Context "Parsing and loading" {
         It "loads the functions from bootstrap.ps1" {
-            Get-Command Confirm-DefenderStep -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Get-DefenderTogglesOn -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Set-TamperProtectionOff -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Set-DefenderPolicy -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Show-DefenderSettings -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Disable-Defender -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Test-DefenderOff -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Resolve-DefenderManually -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            # The stage is manual now: nothing scripted is left behind.
+            Get-Command Set-TamperProtectionOff -ErrorAction SilentlyContinue | Should BeNullOrEmpty
+            Get-Command Set-DefenderPolicy -ErrorAction SilentlyContinue | Should BeNullOrEmpty
+            Get-Command Resolve-DefenderManually -ErrorAction SilentlyContinue | Should BeNullOrEmpty
         }
     }
 
@@ -122,51 +136,9 @@ Describe "windows defender (Pester)" {
         }
     }
 
-    Context "Set-TamperProtectionOff" {
-        BeforeEach {
-            Mock -CommandName Test-Path -MockWith { $false }
-            Mock -CommandName New-Item -MockWith { $script:PathCreates.Add("$Path") }
-            Mock -CommandName Set-ItemProperty -MockWith {
-                $script:RegistryWrites.Add([pscustomobject]@{ Path = $Path; Name = $Name; Value = $Value })
-            }
-        }
-
-        It "switches Tamper Protection off through the module" {
-            Mock -CommandName Set-MpPreference -MockWith {
-                $script:MpPreferenceCalls.Add([pscustomobject]@{ DisableTamperProtection = $DisableTamperProtection })
-            }
-
-            $ok = Set-TamperProtectionOff
-
-            $ok | Should Be $true
-            $script:MpPreferenceCalls.Count | Should Be 1
-            $script:MpPreferenceCalls[0].DisableTamperProtection | Should Be $true
-            $script:RegistryWrites.Count | Should Be 0
-        }
-
-        It "falls back to the registry when the module refuses" {
-            Mock -CommandName Set-MpPreference -MockWith { throw '0x80004001' }
-
-            $ok = Set-TamperProtectionOff
-
-            $ok | Should Be $true
-            $write = $script:RegistryWrites | Where-Object { $_.Name -eq 'TamperProtection' } | Select-Object -First 1
-            $write | Should Not BeNullOrEmpty
-            $write.Value | Should Be 0
-        }
-
-        It "reports a refused write instead of throwing" {
-            Mock -CommandName Set-MpPreference -MockWith { throw '0x80004001' }
-            Mock -CommandName Set-ItemProperty -MockWith { throw 'key is protected' }
-
-            $ok = Set-TamperProtectionOff
-
-            $ok | Should Be $false
-        }
-    }
-
     Context "Disable-Defender" {
         BeforeEach {
+            $script:SettingsShown = 0
             Mock -CommandName Get-MpComputerStatus -MockWith {
                 [pscustomobject]@{ RealTimeProtectionEnabled = $script:RealTime }
             }
@@ -181,27 +153,18 @@ Describe "windows defender (Pester)" {
             Mock -CommandName Get-ItemProperty -MockWith {
                 [pscustomobject]@{ TamperProtection = [int](-not $script:TamperDisabled) }
             }
-            Mock -CommandName Set-ItemProperty -MockWith {
-                $script:RegistryWrites.Add([pscustomobject]@{ Path = $Path; Name = $Name; Value = $Value })
-            }
-            Mock -CommandName New-Item -MockWith { $script:PathCreates.Add("$Path") }
-            Mock -CommandName Test-Path -MockWith { $true }
-            Mock -CommandName Confirm-DefenderStep -MockWith {
+            Mock -CommandName Show-DefenderSettings -MockWith { $script:SettingsShown++ }
+            Mock -CommandName Confirm-Step -MockWith {
                 param($Question)
                 $script:Asked.Add($Question)
                 if ($script:AnswerQueue.Count -gt 0) { [bool]$script:AnswerQueue.Dequeue() } else { $true }
             }
-            Mock -CommandName Set-MpPreference -MockWith {
-                $script:MpPreferenceCalls.Add([pscustomobject]@{
-                    DisableRealtimeMonitoring = $DisableRealtimeMonitoring
-                    DisableBehaviorMonitoring = $DisableBehaviorMonitoring
-                    DisableIOAVProtection     = $DisableIOAVProtection
-                    DisableBlockAtFirstSeen  = $DisableBlockAtFirstSeen
-                    MAPSReporting             = "$MAPSReporting"
-                    SubmitSamplesConsent      = "$SubmitSamplesConsent"
-                    DisableTamperProtection   = [bool]$DisableTamperProtection
-                })
+            # Declared so the tests can prove nothing is ever written.
+            Mock -CommandName Set-MpPreference -MockWith { $script:MpPreferenceCalls.Add($null) }
+            Mock -CommandName Set-ItemProperty -MockWith {
+                $script:RegistryWrites.Add([pscustomobject]@{ Path = $Path; Name = $Name; Value = $Value })
             }
+            Mock -CommandName New-Item -MockWith { $script:PathCreates.Add("$Path") }
         }
 
         It "skips when every toggle is already off" {
@@ -211,40 +174,48 @@ Describe "windows defender (Pester)" {
             $script:SubmitSamplesConsent = 2
             $script:DisableBlockAtFirstSeen = $true
 
-            Disable-Defender
+            $ok = Disable-Defender
 
-            $script:MpPreferenceCalls.Count | Should Be 0
-            $script:RegistryWrites.Count | Should Be 0
+            $ok | Should Be $true
+            $script:SettingsShown | Should Be 0
+            $script:Asked.Count | Should Be 0
         }
 
-        It "turns off every protection on the checklist" {
-            Disable-Defender
+        It "opens Windows Security and waits for the user" {
+            $ok = Disable-Defender
 
-            # The tamper switch is a separate call - look at the preferences one.
-            $preferences = @($script:MpPreferenceCalls | Where-Object { -not $_.DisableTamperProtection })
-            $preferences.Count | Should Be 1
-            $call = $preferences[0]
-            $call.DisableRealtimeMonitoring | Should Be $true
-            $call.DisableBehaviorMonitoring | Should Be $true
-            $call.DisableIOAVProtection | Should Be $true
-            $call.DisableBlockAtFirstSeen | Should Be $true
-            $call.MAPSReporting | Should Be 'Disabled'
-            $call.SubmitSamplesConsent | Should Be 'NeverSend'
+            $script:SettingsShown | Should BeGreaterThan 0
+            $script:Asked.Count | Should BeGreaterThan 0
+            $script:Asked[0] | Should Match 'Windows Security'
+            $ok | Should Be $false
         }
 
-        It "writes the DisableAntiSpyware policy" {
-            Disable-Defender
+        It "returns true as soon as the toggles are off" {
+            Mock -CommandName Confirm-Step -MockWith {
+                param($Question)
+                $script:Asked.Add($Question)
+                # The user flips the toggles before the script checks again.
+                $script:RealTime = $false
+                $script:TamperDisabled = $true
+                $script:MapsReporting = 0
+                $script:SubmitSamplesConsent = 2
+                $script:DisableBlockAtFirstSeen = $true
+                $true
+            }
 
-            $write = $script:RegistryWrites | Where-Object { $_.Name -eq 'DisableAntiSpyware' } | Select-Object -First 1
-            $write | Should Not BeNullOrEmpty
-            $write.Value | Should Be 1
+            $ok = Disable-Defender
+
+            $ok | Should Be $true
+            $script:SettingsShown | Should Be 1
         }
 
-        It "tries to release Tamper Protection before the preference writes" {
+        It "never writes to the platform" {
             Disable-Defender
 
-            $tamperCalls = @($script:MpPreferenceCalls | Where-Object { $_.DisableTamperProtection })
-            $tamperCalls.Count | Should Be 1
+            # Manual only: no preference call, no policy keys, no folders.
+            Assert-MockCalled Set-MpPreference -Times 0 -Exactly -Scope It
+            Assert-MockCalled Set-ItemProperty -Times 0 -Exactly -Scope It
+            Assert-MockCalled New-Item -Times 0 -Exactly -Scope It
         }
     }
 
@@ -277,71 +248,5 @@ Describe "windows defender (Pester)" {
         }
     }
 
-    Context "Resolve-DefenderManually" {
-        BeforeEach {
-            $script:SettingsShown = 0
-            Mock -CommandName Get-MpComputerStatus -MockWith {
-                [pscustomobject]@{ RealTimeProtectionEnabled = $script:RealTime }
-            }
-            Mock -CommandName Get-MpPreference -MockWith {
-                [pscustomobject]@{
-                    DisableBlockAtFirstSeen = $script:DisableBlockAtFirstSeen
-                    MAPSReporting           = $script:MapsReporting
-                    SubmitSamplesConsent    = $script:SubmitSamplesConsent
-                    DisableTamperProtection = $script:TamperDisabled
-                }
-            }
-            Mock -CommandName Get-ItemProperty -MockWith {
-                [pscustomobject]@{ TamperProtection = [int](-not $script:TamperDisabled) }
-            }
-            Mock -CommandName Show-DefenderSettings -MockWith { $script:SettingsShown++ }
-            Mock -CommandName Confirm-DefenderStep -MockWith {
-                param($Question)
-                $script:Asked.Add($Question)
-                if ($script:AnswerQueue.Count -gt 0) { [bool]$script:AnswerQueue.Dequeue() } else { $true }
-            }
-        }
-
-        It "does nothing when every toggle is off" {
-            $script:RealTime = $false
-            $script:TamperDisabled = $true
-            $script:MapsReporting = 0
-            $script:SubmitSamplesConsent = 2
-            $script:DisableBlockAtFirstSeen = $true
-
-            $ok = Resolve-DefenderManually
-
-            $ok | Should Be $true
-            $script:SettingsShown | Should Be 0
-            $script:Asked.Count | Should Be 0
-        }
-
-        It "opens Windows Security and waits for the user" {
-            $ok = Resolve-DefenderManually
-
-            $script:SettingsShown | Should BeGreaterThan 0
-            $script:Asked.Count | Should BeGreaterThan 0
-            $script:Asked[0] | Should Match 'Windows Security'
-            $ok | Should Be $false
-        }
-
-        It "returns true as soon as the toggles are off" {
-            Mock -CommandName Confirm-DefenderStep -MockWith {
-                param($Question)
-                $script:Asked.Add($Question)
-                # The user flips the toggles before the script checks again.
-                $script:RealTime = $false
-                $script:TamperDisabled = $true
-                $script:MapsReporting = 0
-                $script:SubmitSamplesConsent = 2
-                $script:DisableBlockAtFirstSeen = $true
-                $true
-            }
-
-            $ok = Resolve-DefenderManually
-
-            $ok | Should Be $true
-            $script:SettingsShown | Should Be 1
-        }
-    }
 }
+

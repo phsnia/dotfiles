@@ -12,9 +12,11 @@ Windows PowerShell, current user) to `Microsoft.PowerShell_profile.ps1` in this
 directory. It force-replaces whatever is already there.
 
 Bootstrap only initializes the tooling: scoop (with git) and winget. It also
-runs the remaining stages — Windows Update (scan, confirm, install), the
-ReviOS debloat, driver management and the profile link. Install your actual
-software afterwards with:
+runs the remaining stages — a Windows Update **check** (scan and report only,
+it never installs: pending updates are opened in `ms-settings:windowsupdate`
+for you, and `-SkipUpdateCheck` skips the scan), the ReviOS debloat, driver
+management and the profile link. Install your actual software afterwards
+with:
 
 ```
 .\install-software.ps1
@@ -35,18 +37,21 @@ src_profile
 win/
 ├── README.md                         # This file
 ├── ARCHITECTURE.md                   # Design and overview notes
-├── bootstrap.ps1                     # Elevates and symlinks $PROFILE → repo
+├── bootstrap.ps1                     # Elevates, checks Windows Update, symlinks $PROFILE → repo
 ├── install-software.ps1              # Scoop/winget packages + installers (run after bootstrap)
 ├── Microsoft.PowerShell_profile.ps1  # The linked PowerShell profile
 ├── ame-cli.ps1                       # AME CLI helper script
+├── lib/
+│   └── common.ps1                    # Shared helpers (Get-RemoteFile, Test-Artifact)
 ├── specs/
 │   ├── simple-echo-logging.md        # Spec: simple echo logging
 │   ├── docs/
 │   │   └── window_defeneder_docs.txt
 │   └── plans/
 │       ├── parallel-update-download.md  # Plan: parallel update downloads (superseded)
-│       ├── simple-windows-update.md     # Plan: simple Windows Update stage
-│       └── turn-off-defender.md         # Plan: turn off Windows Defender
+│       ├── simple-windows-update.md     # Plan: simple Windows Update stage (superseded)
+│       ├── turn-off-defender.md         # Plan: turn off Windows Defender
+│       └── verify-windows-update.md     # Plan: Windows Update check without install
 └── tests/
     ├── Bootstrap.Tests.ps1           # Pester tests for every bootstrap stage (incl. debloat)
     ├── Defender.Tests.ps1            # Pester tests for the Defender helpers
@@ -56,12 +61,12 @@ win/
 ## Turning Defender off
 
 Windows Defender is turned off before the ReviOS playbook runs — the playbook
-refuses to apply while it is on. `bootstrap.ps1` does everything the platform
-allows and hands the rest to you: while Tamper Protection is on, the platform
-refuses every scripted change, so the stage opens Windows Security and waits
-until the toggles are off.
+refuses to apply while it is on. The stage is deliberately simple and
+manual: it reads the four toggles, prints what is still on and opens Windows
+Security for you. It never writes to the platform — Tamper Protection
+refuses every scripted change anyway.
 
 Windows Security > Virus & threat protection > Manage settings is where the
 toggles live — turn **Tamper protection** off first, then **Real-time
-protection**. The stage re-checks after each round and stops with an error
-when a toggle is still on.
+protection**. The stage re-checks after each round (max 3, one when
+unattended) and stops with an error when a toggle is still on.
