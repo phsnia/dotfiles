@@ -1,6 +1,8 @@
 # Plan: Parallel Windows Update downloads
 
-Status: implemented
+Status: superseded by `simple-windows-update.md` (the parallel pre-download
+was removed again — the Windows Update service downloads on its own, so the
+extra WUA interop bought nothing).
 
 ## Goal
 

@@ -50,7 +50,6 @@ Describe "bootstrap (Pester)" {
             Downloads     = $script:TempRoot
             StateDir      = $script:TempRoot
             StateFile     = Join-Path $script:TempRoot 'bootstrap.state.json'
-            UpdateDownloadConcurrency = 4
             ReviPlaybook  = 'https://example.invalid/Revi-PB.apbx'
             CliStandalone = 'https://example.invalid/CLI-Standalone.zip'
             MsiCenter     = 'https://example.invalid/MSI-Center.zip'
@@ -116,7 +115,7 @@ Describe "bootstrap (Pester)" {
             Get-Command Set-DefenderPolicy -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Set-PSGalleryTrusted -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Update-Windows -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
-            Get-Command Invoke-ParallelUpdateDownload -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
+            Get-Command Format-UpdateSize -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Invoke-Debloat -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Invoke-Drivers -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
             Get-Command Complete-Bootstrap -ErrorAction SilentlyContinue | Should Not BeNullOrEmpty
@@ -249,9 +248,6 @@ Describe "bootstrap (Pester)" {
                 $script:Asked.Add($Question)
                 if ($script:AnswerQueue.Count -gt 0) { [bool]$script:AnswerQueue.Dequeue() } else { $true }
             }
-            # The parallel pre-download is covered by its own tests below;
-            # keep the rest of this context off the real WUA API.
-            Mock -CommandName Invoke-ParallelUpdateDownload -MockWith { @() }
         }
 
         It "installs the NuGet provider when it is missing" {
@@ -328,7 +324,22 @@ Describe "bootstrap (Pester)" {
             Assert-MockCalled Get-WindowsUpdate -Times 0 -Exactly -Scope It -ParameterFilter { $Install }
         }
 
-        It "pre-downloads in parallel before the serial install" {
+        It "scans once and installs once" {
+            Mock -CommandName Get-WindowsUpdate -MockWith {
+                @(
+                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
+                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
+                )
+            }
+
+            Update-Windows
+
+            # One scan to report, one install pass to apply - nothing else.
+            Assert-MockCalled Get-WindowsUpdate -Times 2 -Exactly -Scope It
+            Assert-MockCalled Get-WindowsUpdate -Times 1 -Exactly -Scope It -ParameterFilter { $Install }
+        }
+
+        It "installs in a single pass after the scan" {
             $script:UpdateOrder = [System.Collections.Generic.List[string]]::new()
             Mock -CommandName Get-WindowsUpdate -MockWith {
                 param([switch]$Install)
@@ -336,40 +347,34 @@ Describe "bootstrap (Pester)" {
                     $script:UpdateOrder.Add('install')
                     return
                 }
+                $script:UpdateOrder.Add('scan')
                 @(
                     [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
                     [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
                 )
             }
-            Mock -CommandName Invoke-ParallelUpdateDownload -MockWith { $script:UpdateOrder.Add('download'); @() }
 
             Update-Windows
 
-            Assert-MockCalled Invoke-ParallelUpdateDownload -Times 1 -Exactly -Scope It
-            ($script:UpdateOrder -join '>') | Should Be 'download>install'
+            ($script:UpdateOrder -join '>') | Should Be 'scan>install'
+        }
+    }
+
+    Context "Format-UpdateSize" {
+        It "formats unit-suffixed sizes" {
+            Format-UpdateSize -Update ([pscustomobject]@{ Size = '44MB' }) | Should Be ('{0:N1} MB' -f 44)
         }
 
-        It "skips the parallel download when only one update is pending" {
-            Mock -CommandName Get-WindowsUpdate -MockWith { @([pscustomobject]@{ Title = 'Update X'; Size = 1048576 }) }
-
-            Update-Windows
-
-            Assert-MockCalled Invoke-ParallelUpdateDownload -Times 0 -Exactly -Scope It
-            Assert-MockCalled Get-WindowsUpdate -Times 1 -Exactly -Scope It -ParameterFilter { $Install }
+        It "formats raw byte counts" {
+            Format-UpdateSize -Update ([pscustomobject]@{ Size = 1048576 }) | Should Be ('{0:N1} MB' -f 1)
         }
 
-        It "installs anyway when the parallel download fails" {
-            Mock -CommandName Get-WindowsUpdate -MockWith {
-                @(
-                    [pscustomobject]@{ Title = 'Update A'; Size = 1048576 },
-                    [pscustomobject]@{ Title = 'Update B'; Size = 2097152 }
-                )
-            }
-            Mock -CommandName Invoke-ParallelUpdateDownload -MockWith { throw 'WU broken' }
+        It "adds up sizes that arrive as an array" {
+            Format-UpdateSize -Update ([pscustomobject]@{ Size = @(1048576, 524288) }) | Should Be ('{0:N1} MB' -f 1.5)
+        }
 
-            { Update-Windows } | Should Not Throw
-
-            Assert-MockCalled Get-WindowsUpdate -Times 1 -Exactly -Scope It -ParameterFilter { $Install }
+        It "returns an empty string when the size is missing" {
+            Format-UpdateSize -Update ([pscustomobject]@{ Size = $null }) | Should Be ''
         }
     }
 
@@ -390,11 +395,6 @@ Describe "bootstrap (Pester)" {
         BeforeEach {
             Mock -CommandName Set-MpPreference -MockWith {}
             Mock -CommandName Set-DefenderPolicy -MockWith {}
-            Mock -CommandName Confirm-Step -MockWith {
-                param($Question)
-                $script:Asked.Add($Question)
-                if ($script:AnswerQueue.Count -gt 0) { [bool]$script:AnswerQueue.Dequeue() } else { $true }
-            }
         }
 
         It "skips when all toggles are already off" {
@@ -403,26 +403,16 @@ Describe "bootstrap (Pester)" {
             Disable-Defender
 
             Assert-MockCalled Set-MpPreference -Times 0 -Exactly -Scope It
-            Assert-MockCalled Confirm-Step -Times 0 -Exactly -Scope It
+            Assert-MockCalled Set-DefenderPolicy -Times 0 -Exactly -Scope It
         }
 
-        It "asks for Tamper Protection, then disables the protections" {
-            $script:TamperOff = $false
-            Mock -CommandName Get-DefenderTogglesOn -MockWith {
-                if ($script:TamperOff) { @() } else { @('Tamper protection', 'Real-time protection') }
-            }
-            Mock -CommandName Confirm-Step -MockWith {
-                param($Question)
-                $script:Asked.Add($Question)
-                $script:TamperOff = $true
-                $true
-            }
+        It "turns the protections off through the Defender helpers" {
+            Mock -CommandName Get-DefenderTogglesOn -MockWith { @('Real-time protection') }
 
             Disable-Defender
 
             Assert-MockCalled Set-MpPreference -Times 1 -Exactly -Scope It
             Assert-MockCalled Set-DefenderPolicy -Times 1 -Exactly -Scope It
-            Assert-MockCalled Confirm-Step -Times 1 -Exactly -Scope It
         }
     }
 
@@ -496,7 +486,10 @@ Describe "bootstrap (Pester)" {
 
             { Invoke-Debloat } | Should Throw
 
-            $script:Processes.Count | Should Be 0
+            # The Windows Security window may be opened for the user, but the
+            # TrustedUninstaller CLI must never run.
+            $cliRuns = @($script:Processes | Where-Object { $_.FilePath -match 'TrustedUninstaller' })
+            $cliRuns.Count | Should Be 0
             Test-Path $script:Marker | Should Be $false
         }
 
