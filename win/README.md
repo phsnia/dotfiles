@@ -36,11 +36,11 @@ win/
 ├── bootstrap.ps1                     # Elevates and symlinks $PROFILE → repo
 ├── install-software.ps1              # Scoop/winget packages + installers (run after bootstrap)
 ├── Microsoft.PowerShell_profile.ps1  # The linked PowerShell profile
-├── Debloat.Tests.ps1                 # Pester tests for debloat logic
 ├── ame-cli.ps1                       # AME CLI helper script
 ├── specs/
-│   └── simple-echo-logging.md        # Spec: simple echo logging
+│   ├── simple-echo-logging.md        # Spec: simple echo logging
+│   └── parallel-update-download.md   # Spec: parallel update downloads
 └── tests/
-    ├── Bootstrap.Tests.ps1           # Pester tests for every bootstrap stage
+    ├── Bootstrap.Tests.ps1           # Pester tests for every bootstrap stage (incl. debloat)
     └── InstallSoftware.Tests.ps1     # Pester tests for software install + state file
 ```

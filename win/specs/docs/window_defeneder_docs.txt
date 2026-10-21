@@ -1,0 +1,108 @@
+WINDOWS DEFENDER — POWERSHELL TECHNICAL DOCUMENTATION
+
+Version: 1.0 Platform: Windows 10 / Windows 11 Shell: PowerShell (Administrator) Purpose: Enable and verify Microsoft Defender Antivirus protections.
+
+REQUIREMENTS
+Windows 10 or Windows 11.
+Administrator privileges.
+Microsoft Defender Antivirus installed and available.
+PowerShell or Windows Terminal running as Administrator.
+CHECK CURRENT DEFENDER STATUS
+
+Command:
+
+Get-MpComputerStatus
+
+Display selected properties:
+
+Get-MpComputerStatus | Select-Object
+AntivirusEnabled, RealTimeProtectionEnabled,
+BehaviorMonitorEnabled, AntivirusSignatureLastUpdated
+
+Expected results:
+
+AntivirusEnabled : True RealTimeProtectionEnabled : True BehaviorMonitorEnabled : True
+
+Note: Actual results depend on the Windows configuration and whether another antivirus product is active.
+
+ENABLE REAL-TIME PROTECTION
+
+Command:
+
+Set-MpPreference -DisableRealtimeMonitoring $false
+
+Purpose: Enables real-time antivirus monitoring when the setting is available and not blocked by policy or tamper protection.
+
+ENABLE BEHAVIOR MONITORING
+
+Command:
+
+Set-MpPreference -DisableBehaviorMonitoring $false
+
+Purpose: Enables monitoring of application and process behavior.
+
+ENABLE POTENTIALLY UNWANTED APPLICATION PROTECTION
+
+Command:
+
+Set-MpPreference -PUAProtection Enabled
+
+Purpose: Configures Microsoft Defender to block potentially unwanted applications.
+
+UPDATE SECURITY INTELLIGENCE
+
+Command:
+
+Update-MpSignature
+
+Purpose: Downloads the latest available Defender security intelligence updates.
+
+RUN A QUICK ANTIVIRUS SCAN
+
+Command:
+
+Start-MpScan -ScanType QuickScan
+
+Purpose: Scans common locations for malware and other threats.
+
+VERIFY CONFIGURATION
+
+Command:
+
+Get-MpComputerStatus | Format-List
+AntivirusEnabled, RealTimeProtectionEnabled,
+BehaviorMonitorEnabled, AntivirusSignatureLastUpdated
+
+Review the output to confirm the expected protection states.
+
+TROUBLESHOOTING
+
+Problem: Access denied Solution: Run PowerShell as Administrator.
+
+Problem: Defender cmdlets are unavailable Solution: Check whether Microsoft Defender Antivirus is installed and available on the system. Run:
+
+Get-Command Get-MpComputerStatus
+
+Problem: Real-time protection cannot be enabled Solution: Check whether another antivirus product is active and whether Group Policy, organizational management, or tamper protection is preventing the change.
+
+Problem: Windows reports that settings are managed by an administrator Solution: Check the applicable organizational policies. On managed devices, contact the system administrator.
+
+IMPORTANT SECURITY NOTES
+Do not disable antivirus protection to resolve configuration problems unless there is a specific, authorized reason.
+Do not modify security policies on a managed device without authorization.
+A successful PowerShell command does not guarantee that every Defender protection is active.
+Verify the resulting state using Get-MpComputerStatus.
+Available commands and properties can differ by Windows version, configuration, and Defender platform version.
+OFFICIAL MICROSOFT DOCUMENTATION
+
+Microsoft Defender Antivirus PowerShell reference: https://learn.microsoft.com/en-us/powershell/module/defender/
+
+Get-MpComputerStatus: https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus
+
+Set-MpPreference: https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference
+
+Update-MpSignature: https://learn.microsoft.com/en-us/powershell/module/defender/update-mpsignature
+
+Start-MpScan: https://learn.microsoft.com/en-us/powershell/module/defender/start-mpscan
+
+END OF DOCUMENT

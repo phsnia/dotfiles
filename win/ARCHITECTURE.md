@@ -24,11 +24,30 @@ flowchart TD
 - **Verify first** — each component checks its own end state (marker file,
   package actually installed, device status, symlink target, update scan…).
   Already done → log and return without touching anything.
+- **Self-repair where cheap** — `Initialize-Winget` does not fail outright
+  when `winget` is missing: `Repair-Winget` first asks the Microsoft Store
+  to run an update scan (App Installer arrives from the Store), then falls
+  back to downloading and installing the latest winget-cli `.msixbundle`
+  with its dependency packages (a zip on recent releases, standalone
+  `.appx` on older ones). Only when both routes fail does the stage
+  rethrow.
+- **Interactive prerequisites** — when a step needs a human (Tamper
+  Protection, the four Windows Security toggles), the stage names the
+  toggle that is still on, waits for confirmation and re-checks before
+  continuing. The ReviOS CLI is never started while a toggle is on, so it
+  cannot hang on its own "press any key" loop.
 - **Error handling inside** — each component wraps its work in `try/catch`
   itself. Best-effort components (updates, drivers) log a `WARN` and let the
   bootstrap continue; critical components (scoop init, winget init, debloat
   apply, profile link) log `ERROR` and rethrow so `main` can save the
   recovery state and stop.
+- **Downloads overlap, installs do not** — `Update-Windows` fetches pending
+  content with up to `UpdateDownloadConcurrency` WUA download jobs in
+  parallel (Delivery Optimization splits each job across connections). The
+  install pass stays serial because CBS/TrustedInstaller takes an exclusive
+  servicing lock; running installs concurrently only yields `0x80240016` /
+  `1618`. A failed parallel download is not fatal — the serial install
+  retries whatever is missing.
 - `main`'s outer `try/catch` is only a last resort; its `finally` block pauses
   with "Press Enter to close" on both success and failure (skipped with
   `-Unattended`), so the elevated RunAs window does not vanish instantly.
@@ -37,9 +56,9 @@ flowchart TD
 | --- | --- | --- | --- |
 | `Initialize-Environment` | CurrentUser execution policy already `RemoteSigned`; directories exist | nothing to set | WARN, continue |
 | `Initialize-Scoop` | `scoop` on PATH; `main` bucket present; `git` installed | scoop ready, git installed | rethrow (needed downstream) |
-| `Initialize-Winget` | `winget` on PATH; sources refreshed | winget ready | rethrow (needed by `install-software.ps1`) |
-| `Update-Windows` | update scan returns 0 pending updates | up to date, no reboot | WARN, continue |
-| `Invoke-Debloat` | stage marker `stage-debloat.done` in state dir | playbook already applied | rethrow |
+| `Initialize-Winget` | `winget` on PATH; sources refreshed | winget ready | missing → `Repair-Winget` (Store update scan, then GitHub msixbundle download); still missing → rethrow (needed by `install-software.ps1`) |
+| `Update-Windows` | update scan returns 0 pending updates (NuGet provider and PSGallery trust prepared non-interactively); downloads use parallel WUA jobs, installs stay serial | up to date, no reboot | WARN, continue |
+| `Invoke-Debloat` | stage marker `stage-debloat.done` in state dir; all four Windows Security toggles off | playbook already applied | rethrow; also blocks before the CLI when a toggle stays on |
 | `Invoke-Drivers` | no present device with `Status != OK/Unknown` | all devices healthy | rethrow only on user decline; else WARN |
 | `Complete-Bootstrap` | live `$PROFILE` is a symlink into this repo | link already correct | rethrow |
 
@@ -64,17 +83,34 @@ flowchart TD
 
     G --> H[Initialize Scoop - git only]
     H --> H2[Initialize Winget]
-    H2 --> I[Update Windows - scan first, skip if current]
+    H2 --> HW{winget on PATH?}
+    HW -- No --> HR[Repair App Installer - Store update scan, then GitHub msixbundle download]
+    HR --> HW2{winget available now?}
+    HW2 -- No --> WERR[Log Error - rethrow]
+    HW2 -- Yes --> HS
+    HW -- Yes --> HS[Refresh winget sources]
+    HS --> I[Update Windows - scan first, skip if current]
+    I --> IU{Updates pending and confirmed?}
+
+    IU -- No --> DJ
+    IU -- Yes --> ID[Download in parallel - bounded WUA jobs]
+    ID --> II[Install serially - CBS lock is exclusive]
+    II --> DJ
 
     subgraph DEBLOAT["1. Debloat - ReviOS"]
-        I --> DJ{Stage marker exists?}
+        DJ{Stage marker exists?}
         DJ -- Yes --> DJX[Skip - already applied]
         DJ -- No --> J[Download ReviOS Playbook]
         J --> K[Verify Artifact]
         K --> L{Artifact Valid?}
         L -- No --> ERR[Log Error and Stop]
         L -- Yes --> M[Disable Defender]
-        M --> P{User confirms apply?}
+        M --> MD{All 4 Windows Security toggles off?}
+        MD -- Yes --> P{User confirms apply?}
+        MD -- No --> MP[Prompt: turn off Tamper Protection and re-check - max 3 tries]
+        MP --> MC{Still on?}
+        MC -- No --> P
+        MC -- Yes --> ERR
         P -- No --> DJQ[Skip by user - WARN, continue]
         P -- Yes --> O[Apply via TrustedUninstaller CLI]
         O --> Q{Apply OK?}
@@ -109,6 +145,7 @@ flowchart TD
     end
 
     ERR --> AL[Save Recovery State]
+    WERR --> AL
     AL --> AM([Bootstrap Failed or Needs Attention])
 
     AK --> PAUSE{Unattended?}

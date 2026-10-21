@@ -1,6 +1,6 @@
 ```mermaid
 flowchart TD
-    START([Start bootstrap.sh]) --> ARGS["Parse arguments<br/>Default: core, drivers, utilities, devkit,<br/>fonts, system, dotfiles, polkit"]
+    START([Start bootstrap.sh]) --> ARGS["Parse arguments<br/>Default: install first, then bootstrap"]
     ARGS --> ROOT{Running as root?}
     ROOT -->|Yes| ERR["Error: run as a normal user"]
     ROOT -->|No| HELP{Help requested?}
@@ -10,33 +10,28 @@ flowchart TD
     VALID -->|No| ERR
     VALID -->|Yes| UPDATE["Full system update<br/>sudo pacman -Syu"]
 
-    subgraph CORE["core"]
-        C1["Install git, base-devel, vim, alacritty"]
-    end
-    subgraph DRIVERS["drivers"]
-        D1["Install Mesa, Vulkan, Intel / AMD / Nouveau"]
-    end
-    subgraph UTILITIES["utilities"]
-        U1["Install WM, Xorg, audio, yay + AUR apps"]
-    end
-    subgraph DEVKIT["devkit"]
-        K1["Install mise, Docker, toolchain, IDEs"]
-    end
-    subgraph FONTS["fonts"]
-        F1["Install Noto / DejaVu / Liberation + Comic Mono"]
-    end
-    subgraph SYSTEM["system"]
-        S1["Configure timezone and NTP"]
-    end
-    subgraph DOTFILES["dotfiles"]
-        DF1["Link ~/.bashrc and ~/.config"]
-    end
-    subgraph POLKIT["polkit"]
-        P1["Write udiskie mount rules"]
+    UPDATE --> CORE
+
+    subgraph INSTALL["1. Install software"]
+        direction TB
+        CORE["core — base packages<br/>git, base-devel, vim, alacritty"]
+        DRIVERS["drivers — graphics / Vulkan"]
+        UTILITIES["utilities — WM, Xorg, audio, yay + AUR"]
+        DEVKIT["devkit — mise, Docker, toolchain, IDEs"]
+        FONTS["fonts — Noto / DejaVu / Liberation + Comic Mono"]
+        CORE --> DRIVERS --> UTILITIES --> DEVKIT --> FONTS
     end
 
-    UPDATE --> C1
-    C1 --> D1 --> U1 --> K1 --> F1 --> S1 --> DF1 --> P1
-    P1 --> DONE([All done])
+    FONTS -->|"software ready"| SYSTEM
+
+    subgraph BOOTSTRAP["2. Bootstrap (config)"]
+        direction TB
+        SYSTEM["system — timezone + NTP"]
+        DOTFILES["dotfiles — link ~/.bashrc and ~/.config"]
+        POLKIT["polkit — udiskie mount rules"]
+        SYSTEM --> DOTFILES --> POLKIT
+    end
+
+    POLKIT --> DONE([All done])
     ERR --> EXIT1([Exit 1])
 ```
