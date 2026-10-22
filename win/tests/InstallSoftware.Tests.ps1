@@ -23,17 +23,20 @@ Describe "install-software (Pester)" {
         # Isolated temp root per test
         $script:TempRoot = Join-Path $env:TEMP ("sw-tests-" + [guid]::NewGuid().ToString('N'))
         $script:Config = @{
-            Downloads = Join-Path $script:TempRoot 'Downloads'
-            StateDir  = Join-Path $script:TempRoot '.dotfiles'
-            StateFile = Join-Path $script:TempRoot '.dotfiles\software.state.json'
-            QtEmu     = 'https://example.invalid/qtemu.exe'
+            Downloads   = Join-Path $script:TempRoot 'Downloads'
+            StateDir    = Join-Path $script:TempRoot '.dotfiles'
+            StateFile   = Join-Path $script:TempRoot '.dotfiles\software.state.json'
+            PackageFile = Join-Path $winRoot 'package.txt'
+            QtEmu       = 'https://example.invalid/qtemu.exe'
         }
         $script:Software = [System.Collections.Generic.List[object]]::new()
+        $script:Unattended = $true   # main must not pause in tests
 
         # Tools visible to the code under test
         $script:Present = @()      # commands Get-Command should 'find'
         $script:ScoopCalls = [System.Collections.Generic.List[string]]::new()
         $script:ScoopApps = @()    # packages the scoop shim reports installed
+        $script:ScoopBroken = @()  # packages scoop lists but has failed to install
         $script:ScoopBuckets = @()
         $script:ScoopFailOn = $null
         $script:WingetCalls = [System.Collections.Generic.List[string]]::new()
@@ -48,6 +51,11 @@ Describe "install-software (Pester)" {
             switch ($cmd) {
                 'list' {
                     if ($script:ScoopApps -contains $arg) { Write-Output $arg }
+                    if ($script:ScoopBroken -contains $arg) { Write-Output "$arg  Install failed" }
+                }
+                'prefix' {
+                    if ($script:ScoopApps -contains $arg) { Write-Output (Join-Path $env:TEMP "$arg\current") }
+                    else { $global:LASTEXITCODE = 1 }
                 }
                 'bucket' {
                     if ($arg -eq 'list') { $script:ScoopBuckets }
@@ -135,13 +143,13 @@ Describe "install-software (Pester)" {
 
     Context "Install-ScoopPackages" {
         It "records already-present packages and installs nothing" {
-            $script:ScoopApps = @('git', 'fzf', 'glazewm', 'obs-studio', 'zed', 'zellij', 'vscode', 'dotnet-sdk-lts', 'python312')
+            $script:ScoopApps = @('git', 'fzf', 'glazewm', 'obs-studio', 'zed', 'zellij', 'vscode', 'dotnet-sdk-lts', 'python312', 'yazi', 'neatdownloadmanager')
             $script:ScoopBuckets = @('extras', 'versions', 'java')
 
             Install-ScoopPackages
 
             @($script:ScoopCalls | Where-Object { $_ -like 'install*' }).Count | Should Be 0
-            $script:Software.Count | Should Be 9   # git + 8 packages
+            $script:Software.Count | Should Be 11   # git + 10 packages
             @($script:Software | Where-Object result -ne 'already-present').Count | Should Be 0
         }
 
@@ -150,12 +158,21 @@ Describe "install-software (Pester)" {
 
             $script:ScoopCalls | Should Not BeNullOrEmpty
             ($script:ScoopCalls -contains 'install git') | Should Be $true
-            foreach ($package in 'fzf', 'glazewm', 'obs-studio', 'zed', 'zellij', 'vscode', 'dotnet-sdk-lts', 'python312') {
+            foreach ($package in 'fzf', 'glazewm', 'obs-studio', 'zed', 'zellij', 'vscode', 'dotnet-sdk-lts', 'python312', 'yazi', 'neatdownloadmanager') {
                 ($script:ScoopCalls -contains "install $package") | Should Be $true
             }
-            $script:Software.Count | Should Be 9
+            $script:Software.Count | Should Be 11
             @($script:Software | Where-Object result -ne 'installed').Count | Should Be 0
             $script:ScoopBuckets -contains 'extras' | Should Be $true
+        }
+
+        It "retries a package whose previous install failed" {
+            $script:ScoopBroken = @('git')
+
+            Install-ScoopPackages
+
+            ($script:ScoopCalls -contains 'install git') | Should Be $true
+            @($script:Software | Where-Object { $_.name -eq 'git' -and $_.result -eq 'installed' }).Count | Should Be 1
         }
 
         It "records a failed install and keeps going" {
@@ -178,7 +195,7 @@ Describe "install-software (Pester)" {
 
             Install-WingetPackages
 
-            $script:Software.Count | Should Be 6
+            $script:Software.Count | Should Be 5
             @($script:Software | Where-Object { $_.name -eq 'Brave.Brave' }).Count | Should Be 1
             @($script:Software | Where-Object { $_.name -eq 'Brave.Brave' -and $_.result -eq 'already-present' }).Count | Should Be 1
             @($script:Software | Where-Object { $_.name -eq 'Roblox.Roblox' -and $_.result -eq 'installed' }).Count | Should Be 1
@@ -194,24 +211,28 @@ Describe "install-software (Pester)" {
             $failed[0].name | Should Be 'Roblox.Roblox'
             $failed[0].tool | Should Be 'winget'
             # The rest still installed
-            @($script:Software | Where-Object { $_.result -eq 'installed' }).Count | Should Be 5
+            @($script:Software | Where-Object { $_.result -eq 'installed' }).Count | Should Be 4
         }
     }
 
     Context "Install-Software" {
-        It "skips everything when the expected commands are present" {
+        It "checks every package but skips installers when the expected commands are present" {
             $script:Present = @('git', 'fzf', 'zed', 'code')
+            $script:ScoopApps = @('git', 'fzf', 'glazewm', 'obs-studio', 'zed', 'zellij', 'vscode', 'dotnet-sdk-lts', 'python312', 'yazi', 'neatdownloadmanager')
+            $script:WingetApps = @('Brave.Brave', 'BlenderFoundation.Blender.LTS.4.5', 'xpf0000.FlyEnv', 'HiBitSoftware.HiBitUninstaller', 'Roblox.Roblox')
             Mock -CommandName Get-Command -MockWith {
                 param($Name)
                 if ($script:Present -contains $Name) { [pscustomobject]@{ Name = $Name; Source = "C:\scoop\$Name.exe" } }
             }
+            Mock -CommandName Start-Process -MockWith {}
 
             Install-Software
 
-            $script:ScoopCalls.Count | Should Be 0
-            $script:WingetCalls.Count | Should Be 0
-            $script:Software.Count | Should Be 4
+            @($script:ScoopCalls | Where-Object { $_ -like 'install*' }).Count | Should Be 0
+            @($script:WingetCalls | Where-Object { $_ -like 'install*' }).Count | Should Be 0
+            $script:Software.Count | Should Be 16
             @($script:Software | Where-Object result -ne 'already-present').Count | Should Be 0
+            Assert-MockCalled Start-Process -Times 0 -Exactly -Scope It
         }
 
         It "installs packages and the external installer when something is missing" {
@@ -233,7 +254,7 @@ Describe "install-software (Pester)" {
 
             ($script:ScoopCalls -contains 'install git') | Should Be $true
             $wingetInstalls = @($script:WingetCalls | Where-Object { $_ -like 'install*' })
-            $wingetInstalls.Count | Should Be 6
+            $wingetInstalls.Count | Should Be 5
             Assert-MockCalled Start-Process -Times 1 -Exactly -Scope It
             $external = @($script:Software | Where-Object tool -eq 'installer')
             $external.Count | Should Be 1

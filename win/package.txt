@@ -1,0 +1,20 @@
+# Packages installed by install-software.ps1
+# One per line: <tool> <id>
+# tool: scoop | winget
+
+scoop fzf
+scoop glazewm
+scoop obs-studio
+scoop zed
+scoop zellij
+scoop vscode
+scoop dotnet-sdk-lts
+scoop python312
+scoop yazi
+scoop neatdownloadmanager
+
+winget Brave.Brave
+winget BlenderFoundation.Blender.LTS.4.5
+winget xpf0000.FlyEnv
+winget HiBitSoftware.HiBitUninstaller
+winget Roblox.Roblox

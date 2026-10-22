@@ -10,7 +10,7 @@ Describe "bootstrap (Pester)" {
         $testsRoot    = Split-Path $PSCommandPath -Parent
         $winRoot      = Split-Path $testsRoot -Parent
         $bootstrapPs  = Join-Path $winRoot 'bootstrap.ps1'
-        $ameCli       = Join-Path $winRoot 'ame-cli.ps1'
+        $ameCli       = Join-Path $winRoot 'lib\ame-cli.ps1'
 
         # Load functions via AST (skip main)
         $tokens = $null; $parseErrors = $null
@@ -88,6 +88,7 @@ Describe "bootstrap (Pester)" {
         # Tools visible to the code under test
         $script:ScoopCalls = [System.Collections.Generic.List[string]]::new()
         $script:ScoopApps = @()
+        $script:ScoopBroken = @()
         $script:ScoopBuckets = @()
         $script:ScoopFailOn = $null
         $script:WingetCalls = [System.Collections.Generic.List[string]]::new()
@@ -101,6 +102,11 @@ Describe "bootstrap (Pester)" {
             switch ($cmd) {
                 'list' {
                     if ($script:ScoopApps -contains $arg) { Write-Output $arg }
+                    if ($script:ScoopBroken -contains $arg) { Write-Output "$arg  Install failed" }
+                }
+                'prefix' {
+                    if ($script:ScoopApps -contains $arg) { Write-Output (Join-Path $env:TEMP "$arg\current") }
+                    else { $global:LASTEXITCODE = 1 }
                 }
                 'bucket' {
                     if ($arg -eq 'list') { $script:ScoopBuckets }
@@ -220,6 +226,15 @@ Describe "bootstrap (Pester)" {
 
             @($script:ScoopCalls | Where-Object { $_ -like 'install*' }).Count | Should Be 0
             @($script:ScoopCalls | Where-Object { $_ -like 'bucket add*' }).Count | Should Be 0
+        }
+
+        It "retries git when scoop lists a failed install" {
+            $script:ScoopBuckets = @('main')
+            $script:ScoopBroken = @('git')
+
+            Initialize-Scoop
+
+            ($script:ScoopCalls -contains 'install git') | Should Be $true
         }
 
         It "throws when git cannot be installed" {

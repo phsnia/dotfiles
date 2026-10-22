@@ -278,11 +278,12 @@ definition.
 ## Software installation
 
 `install-software.ps1` follows the same verify-first contract as the bootstrap
-stages but runs standalone, as a normal user (no elevation):
+stages but runs standalone, as a normal user (no elevation). The package ids
+live in `package.txt` (`<tool> <id>` per line, `#` for comments).
 
 | Component | Verify check | Skip means | Error policy |
 | --- | --- | --- | --- |
-| `Install-ScoopPackages` | `scoop list <pkg>` lists the package | package installed | WARN per package |
+| `Install-ScoopPackages` | `scoop prefix <pkg>` succeeds | package installed | WARN per package |
 | `Install-WingetPackages` | `winget list --id` finds the package | package installed | WARN per package |
 | `Install-Software` | `git`/`fzf`/`zed`/`code` all on PATH | software present | rethrow |
 

@@ -40,6 +40,7 @@ win/
 ├── ARCHITECTURE.md                   # Design and overview notes
 ├── bootstrap.ps1                     # Elevates, installs Windows updates, symlinks $PROFILE → repo
 ├── install-software.ps1              # Scoop/winget packages + installers (run after bootstrap)
+├── package.txt                       # Package ids read by install-software.ps1
 ├── Microsoft.PowerShell_profile.ps1  # The linked PowerShell profile
 ├── ame-cli.ps1                       # AME CLI helper script
 ├── lib/

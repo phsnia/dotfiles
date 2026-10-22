@@ -9,9 +9,10 @@
 #
 # @example
 #   .\install-software.ps1
+#   .\install-software.ps1 -Unattended
 
 [CmdletBinding()]
-param()
+param([switch]$Unattended)
 
 $ErrorActionPreference = 'Stop'
 
@@ -20,10 +21,11 @@ $ErrorActionPreference = 'Stop'
 
 # Load configuration.
 $Config = @{
-    Downloads = Join-Path $env:USERPROFILE 'Downloads'
-    StateDir  = Join-Path $env:USERPROFILE '.dotfiles'
-    StateFile = Join-Path $env:USERPROFILE '.dotfiles\software.state.json'
-    QtEmu     = 'https://github.com/MateuszKrawczuk/QtEmu/releases/download/2.1.1/qtemu.exe'
+    Downloads   = Join-Path $env:USERPROFILE 'Downloads'
+    StateDir    = Join-Path $env:USERPROFILE '.dotfiles'
+    StateFile   = Join-Path $env:USERPROFILE '.dotfiles\software.state.json'
+    PackageFile = Join-Path $PSScriptRoot 'package.txt'
+    QtEmu       = 'https://github.com/MateuszKrawczuk/QtEmu/releases/download/2.1.1/qtemu.exe'
 }
 
 # Full inventory of managed software for this run (see Add-SoftwareRecord).
@@ -61,6 +63,33 @@ function Save-SoftwareState {
     Write-Host "==> Software state saved: $($Config.StateFile)"
 }
 
+# Check whether scoop has a complete install of a package.
+# `scoop list` still lists a failed install, so use `scoop prefix`, which
+# fails until the package has a `current` directory.
+#
+# @param {string} Name - Scoop package name.
+# @return {bool} True when the package is installed.
+# @example
+#   if (Test-ScoopPackage 'git') { ... }
+function Test-ScoopPackage {
+    param([string]$Name)
+    scoop prefix $Name *> $null
+    $LASTEXITCODE -eq 0
+}
+
+# Read the package ids for one tool from package.txt.
+#
+# @param {string} Tool - scoop or winget.
+# @return {string[]} Package ids in file order.
+# @example
+#   Get-PackageList -Tool scoop
+function Get-PackageList {
+    param([string]$Tool)
+    foreach ($line in Get-Content $Config.PackageFile) {
+        if ($line.Trim() -match "^$Tool\s+(\S.*)$") { $Matches[1].Trim() }
+    }
+}
+
 # Install Scoop-managed packages.
 # Verify: each package installed? Then skip it.
 # git is checked first — the extras/versions buckets are cloned with git
@@ -73,7 +102,7 @@ function Install-ScoopPackages {
 
     try {
         # git first - the other buckets are cloned with git.
-        if (scoop list git 2>$null | Select-String -SimpleMatch 'git') {
+        if (Test-ScoopPackage 'git') {
             Write-Host "==> Already installed (scoop): git"
             Add-SoftwareRecord -Name 'git' -Tool 'scoop' -Result 'already-present'
         } else {
@@ -90,24 +119,18 @@ function Install-ScoopPackages {
                 Write-Host "==> Scoop bucket already added: $bucket"
             } else {
                 scoop bucket add $bucket
+                if ($LASTEXITCODE -ne 0) { Write-Host "==> scoop bucket add failed: $bucket (exit code $LASTEXITCODE)" }
             }
         }
     } catch {
         Write-Host "==> Scoop setup failed: $($_.Exception.Message)"
     }
 
-    $packages = 'fzf', 
-                'glazewm', 
-                'obs-studio', 
-                'zed', 
-                'zellij', 
-                'vscode', 
-                'dotnet-sdk-lts', 
-                'python312'
+    $packages = Get-PackageList -Tool scoop
     foreach ($package in $packages) {
         try {
             # Verify: package already installed? Then skip.
-            if (scoop list $package 2>$null | Select-String -SimpleMatch $package) {
+            if (Test-ScoopPackage $package) {
                 Write-Host "==> Already installed (scoop): $package"
                 Add-SoftwareRecord -Name $package -Tool 'scoop' -Result 'already-present'
                 continue
@@ -131,12 +154,7 @@ function Install-WingetPackages {
     Write-Host "==> Installing winget packages..."
 
     # Browsers (Edge is kept by the playbook; Brave comes from winget)
-    $packages = 'Brave.Brave',
-                'BlenderFoundation.Blender.LTS.4.5',
-                'xpf0000.FlyEnv',
-                'JavadMotallebi.NeatDownloadManager',
-                'HiBitSoftware.HiBitUninstaller',
-                'Roblox.Roblox'
+    $packages = Get-PackageList -Tool winget
 
     foreach ($id in $packages) {
         try {
@@ -159,36 +177,28 @@ function Install-WingetPackages {
 }
 
 # Install scoop/winget packages and run downloaded installers.
-# Verify: all expected commands on PATH? Then skip.
 #
 # @example
 #   Install-Software
 function Install-Software {
     Write-Host "==> Software installation..."
 
-    # Verify: everything already installed? Then skip.
+    try {
+        # Each package verifies its own state, so always check the whole list.
+        Install-ScoopPackages
+        Install-WingetPackages
+    } catch {
+        Write-Host "==> Package installation failed: $($_.Exception.Message)"
+    }
+
+    # Verify: expected commands on PATH? Then skip the downloaded installers.
     $missing = @('git', 'fzf', 'zed', 'code') |
         Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
 
     if ($missing.Count -eq 0) {
-        Write-Host "==> All expected software already installed; skipping."
-
-        # Still record the inventory for the state file.
-        foreach ($command in 'git', 'fzf', 'zed', 'code') {
-            $source = (Get-Command $command -ErrorAction SilentlyContinue).Source
-            $tool = if ($source -match 'scoop') { 'scoop' } elseif ($source) { 'path' } else { 'unknown' }
-            Add-SoftwareRecord -Name $command -Tool $tool -Result 'already-present'
-        }
+        Write-Host "==> All expected commands present; skipping installers."
     } else {
         Write-Host "==> Missing software: $($missing -join ', ')"
-
-        try {
-            # Install scoop + winget packages (each verifies per package)
-            Install-ScoopPackages
-            Install-WingetPackages
-        } catch {
-            Write-Host "==> Package installation failed: $($_.Exception.Message)"
-        }
 
         # Download external files
         $external = @(
@@ -240,10 +250,12 @@ function main {
     # Verify: scoop and winget initialized by bootstrap.ps1? Then proceed.
     if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
         Write-Host "==> scoop not found on PATH; run bootstrap.ps1 first."
+        if (-not $Unattended) { Write-Host 'Press Enter to close' -NoNewline; $null = Read-Host }
         return
     }
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host "==> winget not found on PATH; run bootstrap.ps1 first."
+        if (-not $Unattended) { Write-Host 'Press Enter to close' -NoNewline; $null = Read-Host }
         return
     }
 
@@ -262,6 +274,7 @@ function main {
         $present   = @($script:Software | Where-Object result -eq 'already-present').Count
         $failed    = @($script:Software | Where-Object result -eq 'failed').Count
         Write-Host "==> Software summary: $installed installed, $present already present, $failed failed."
+        if (-not $Unattended) { Write-Host 'Press Enter to close' -NoNewline; $null = Read-Host }
     }
 }
 
