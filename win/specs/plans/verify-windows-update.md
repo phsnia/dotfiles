@@ -1,6 +1,9 @@
 # Plan: Windows Update check without install
 
-Status: implemented
+Status: superseded by `merge-update-into-bootstrap.md` (the stage installs
+now — it scans, installs the pending updates and scans again until no update
+package is left; the scan itself stayed on the built-in Windows Update
+client API, so the PSWindowsUpdate pre-flight still goes away).
 
 ## Goal
 

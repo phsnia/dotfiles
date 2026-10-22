@@ -12,9 +12,10 @@ Windows PowerShell, current user) to `Microsoft.PowerShell_profile.ps1` in this
 directory. It force-replaces whatever is already there.
 
 Bootstrap only initializes the tooling: scoop (with git) and winget. It also
-runs the remaining stages — a Windows Update **check** (scan and report only,
-it never installs: pending updates are opened in `ms-settings:windowsupdate`
-for you, and `-SkipUpdateCheck` skips the scan), the ReviOS debloat, driver
+runs the remaining stages — a Windows Update **stage** first (it scans,
+installs the pending updates and scans again until no update package is left;
+a pending reboot ends the round and the remaining updates are installed by the
+next run, `-SkipUpdateCheck` skips the stage), then the ReviOS debloat, driver
 management and the profile link. Install your actual software afterwards
 with:
 
@@ -37,7 +38,7 @@ src_profile
 win/
 ├── README.md                         # This file
 ├── ARCHITECTURE.md                   # Design and overview notes
-├── bootstrap.ps1                     # Elevates, checks Windows Update, symlinks $PROFILE → repo
+├── bootstrap.ps1                     # Elevates, installs Windows updates, symlinks $PROFILE → repo
 ├── install-software.ps1              # Scoop/winget packages + installers (run after bootstrap)
 ├── Microsoft.PowerShell_profile.ps1  # The linked PowerShell profile
 ├── ame-cli.ps1                       # AME CLI helper script
@@ -48,10 +49,15 @@ win/
 │   ├── docs/
 │   │   └── window_defeneder_docs.txt
 │   └── plans/
+│       ├── fix-defender-toggle-detection.md # Plan: fix the Defender toggle detection
+│       ├── merge-update-into-bootstrap.md # Plan: merge the update installer into bootstrap
 │       ├── parallel-update-download.md  # Plan: parallel update downloads (superseded)
+│       ├── simple-defender-check.md     # Plan: simple Windows Defender check
 │       ├── simple-windows-update.md     # Plan: simple Windows Update stage (superseded)
+│       ├── simplify-bootstrap-code.md   # Plan: core/support split of bootstrap.ps1
+│       ├── simplify-bootstrap-helpers.md # Plan: merge the one-caller bootstrap helpers
 │       ├── turn-off-defender.md         # Plan: turn off Windows Defender
-│       └── verify-windows-update.md     # Plan: Windows Update check without install
+│       └── verify-windows-update.md     # Plan: Windows Update check without install (superseded)
 └── tests/
     ├── Bootstrap.Tests.ps1           # Pester tests for every bootstrap stage (incl. debloat)
     ├── Defender.Tests.ps1            # Pester tests for the Defender helpers
@@ -68,5 +74,8 @@ refuses every scripted change anyway.
 
 Windows Security > Virus & threat protection > Manage settings is where the
 toggles live — turn **Tamper protection** off first, then **Real-time
-protection**. The stage re-checks after each round (max 3, one when
-unattended) and stops with an error when a toggle is still on.
+protection**, **Microsoft Defender Antivirus cloud protection** and
+**Automatically send sample files**. The stage waits for you to press Enter,
+checks once more and stops with an error when a toggle is still on. With
+`-Unattended` it only reports: no window is opened and the debloat is
+blocked.
