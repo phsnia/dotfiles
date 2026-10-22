@@ -41,7 +41,7 @@ $script:UpdateCheckResult = $null
 
 # Load the helper scripts that live next to this one.
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
-. (Join-Path $PSScriptRoot 'ame-cli.ps1')
+. (Join-Path $PSScriptRoot 'lib\ame-cli.ps1')
 
 # -----------------------------------------------------------------------------
 # 1. Configuration
