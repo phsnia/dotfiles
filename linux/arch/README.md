@@ -13,6 +13,7 @@ arch/
 ├── .gitignore              # ignores machine-local secrets and state
 ├── ARCHITECTURE.md         # mermaid flowchart of bootstrap.sh
 ├── bootstrap.sh            # installer / configurator
+├── packages.txt            # package definitions per stage
 ├── README.md
 └── .config/                # XDG configs -> ~/.config
     ├── alacritty/
@@ -51,6 +52,26 @@ arch/
 ```
 
 Stages: `core`, `drivers`, `utilities`, `devkit`, `fonts`, `system`, `dotfiles`, `polkit`.
+
+## Packages
+
+`packages.txt` defines the packages installed by `bootstrap.sh`, one per line:
+
+```text
+<stage> <manager> <package>
+```
+
+- `stage` — `core`, `drivers`, `utilities`, `devkit`, `fonts`, or `polkit`
+- `manager` — `pacman`, `aur` (via `yay`), or `mise`
+- `package` — package or tool name
+
+Blank lines and `#` comments are ignored. Within a stage, packages are
+installed grouped by manager, in file order. To add or remove a package, edit
+`packages.txt`; no script changes are needed.
+
+Steps that are not package installs stay in `bootstrap.sh`: building `yay`,
+enabling `ly` and Docker, Comic Mono download, timezone, dotfile links, and
+the polkit rule.
 
 ## Configs
 

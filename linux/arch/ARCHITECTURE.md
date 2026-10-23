@@ -10,15 +10,16 @@ flowchart TD
     VALID -->|No| ERR
     VALID -->|Yes| UPDATE["Full system update<br/>sudo pacman -Syu"]
 
-    UPDATE --> CORE
+    UPDATE --> PKG["Read packages.txt<br/>stage manager package"]
+    PKG --> CORE
 
     subgraph INSTALL["1. Install software"]
         direction TB
-        CORE["core — base packages<br/>git, base-devel, vim, alacritty"]
-        DRIVERS["drivers — graphics / Vulkan"]
-        UTILITIES["utilities — WM, Xorg, audio, yay + AUR"]
-        DEVKIT["devkit — mise, Docker, toolchain, IDEs"]
-        FONTS["fonts — Noto / DejaVu / Liberation + Comic Mono"]
+        CORE["core — base packages<br/>packages.txt [core]"]
+        DRIVERS["drivers — graphics / Vulkan<br/>packages.txt [drivers]"]
+        UTILITIES["utilities — WM, Xorg, audio, yay + AUR<br/>packages.txt [utilities]"]
+        DEVKIT["devkit — mise, Docker, toolchain, IDEs<br/>packages.txt [devkit]"]
+        FONTS["fonts — Noto / DejaVu / Liberation + Comic Mono<br/>packages.txt [fonts]"]
         CORE --> DRIVERS --> UTILITIES --> DEVKIT --> FONTS
     end
 
@@ -28,7 +29,7 @@ flowchart TD
         direction TB
         SYSTEM["system — timezone + NTP"]
         DOTFILES["dotfiles — link ~/.bashrc and ~/.config"]
-        POLKIT["polkit — udiskie mount rules"]
+        POLKIT["polkit — udiskie mount rules<br/>packages.txt [polkit]"]
         SYSTEM --> DOTFILES --> POLKIT
     end
 

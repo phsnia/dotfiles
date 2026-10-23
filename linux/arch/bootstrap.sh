@@ -18,6 +18,7 @@ set -Eeuo pipefail
 readonly DOTFILES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly CONFIG_DIR="$HOME/.config"
 readonly DOTFILES_CONFIG="$DOTFILES_DIR/.config"
+readonly PACKAGES_FILE="$DOTFILES_DIR/packages.txt"
 
 # Polkit mount rule is written for this user (override with POLKIT_USER).
 readonly POLKIT_USER="${POLKIT_USER:-phng}"
@@ -28,7 +29,6 @@ readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
-readonly CYAN='\033[0;36m'
 readonly RESET='\033[0m'
 
 # Log helpers
@@ -111,8 +111,8 @@ step() {
 #
 # @param {...string} pkg - Package names to install.
 # @example
-#   install git curl neovim
-install() {
+#   install_packages git curl neovim
+install_packages() {
     local pkg
     local -a missing=()
 
@@ -125,6 +125,45 @@ install() {
     if ((${#missing[@]})); then
         sudo pacman -S --needed --noconfirm "${missing[@]}"
     fi
+}
+
+# Print packages for a stage and manager from packages.txt.
+#
+# @param {string} stage   - Stage name (core, drivers, utilities, ...).
+# @param {string} manager - Package manager (pacman, aur, mise).
+# @example
+#   packages_for core pacman
+packages_for() {
+    local stage="$1" manager="$2"
+    awk -v stage="$stage" -v manager="$manager" '
+        /^[[:space:]]*(#|$)/ { next }
+        $1 == stage && $2 == manager { print $3 }
+    ' "$PACKAGES_FILE"
+}
+
+# Install a stage's packages for one manager, using packages.txt.
+#
+# @param {string} stage            - Stage name.
+# @param {string} [manager=pacman] - Package manager (pacman, aur, mise).
+# @example
+#   install_stage_packages utilities
+#   install_stage_packages devkit aur
+install_stage_packages() {
+    local stage="$1" manager="${2:-pacman}"
+    local -a pkgs=()
+
+    mapfile -t pkgs < <(packages_for "$stage" "$manager")
+    ((${#pkgs[@]})) || return 0
+
+    case "$manager" in
+        pacman) install_packages "${pkgs[@]}" ;;
+        aur)    yay -S --needed --noconfirm "${pkgs[@]}" ;;
+        mise)   mise use -g "${pkgs[@]}" ;;
+        *)
+            error "Unknown package manager for stage $stage: $manager"
+            exit 1
+            ;;
+    esac
 }
 
 # --- Stages ---
@@ -175,7 +214,6 @@ dotfiles() {
     local -a CONFIGS=(
         i3
         alacritty
-        opencode
         git
         tmux
         ssh
@@ -218,7 +256,7 @@ dotfiles() {
 polkit() {
     info "Installing polkit / udiskie and configuring mount rules..."
 
-    sudo pacman -S --needed polkit udiskie
+    install_stage_packages polkit
     sudo mkdir -p /etc/polkit-1/rules.d
 
     sudo tee /etc/polkit-1/rules.d/49-mount.rules > /dev/null <<EOF
@@ -243,11 +281,7 @@ EOF
 #   core
 core() {
     info "Installing core packages..."
-    install \
-        git \
-        base-devel \
-        vim \
-        alacritty
+    install_stage_packages core
     success "Core packages installed."
 }
 
@@ -259,44 +293,21 @@ core() {
 #   drivers
 drivers() {
     info "Installing graphics drivers..."
-    install \
-        mesa \
-        intel-media-driver \
-        libva-intel-driver \
-        vulkan-intel \
-        vulkan-radeon \
-        xf86-video-amdgpu \
-        xf86-video-ati \
-        vulkan-nouveau \
-        xf86-video-nouveau
+    install_stage_packages drivers
     success "Graphics drivers installed."
 }
 
-# --- Utilities  ---
+# --- Utilities ---
 
 # Install window manager, terminal multiplexer, Xorg, audio stack, yay (AUR
-# helper) and AUR apps.
-# Also enables the ly display manager and adds $USER to the docker group.
+# helper) and AUR apps. Enables the ly display manager.
 #
 # @example
 #   utilities
 utilities() {
     info "Installing utilities, window manager and audio..."
 
-    install \
-        i3 \
-        xorg-server \
-        xorg-xinit \
-        ly \
-        dmenu \
-        neovim \
-        tmux \
-        feh \
-        thunar \
-        thunar-volman \
-        gvfs \
-        tumbler \
-        htop
+    install_stage_packages utilities
 
     # Configure ly display manager
     info "Configuring ly..."
@@ -304,18 +315,6 @@ utilities() {
         step 1 "Enabling ly@tty1.service"
         sudo systemctl enable ly@tty1.service
     fi
-
-    # Audio stack
-    info "Installing audio..."
-    install \
-        pipewire \
-        pipewire-pulse \
-        pavucontrol \
-        alsa-utils \
-        sof-firmware
-    success "Audio installed."
-
-    # Docker group is configured in the devkit stage (docker is installed there).
 
     # yay (AUR helper) — built from source as the current (non-root) user.
     if ! command -v yay &>/dev/null; then
@@ -331,10 +330,7 @@ utilities() {
 
     # AUR packages
     info "Installing AUR packages..."
-    yay -S --needed --noconfirm \
-        brave-bin \
-        zed \
-        visual-studio-code-bin
+    install_stage_packages utilities aur
 
     success "Utilities installed."
 }
@@ -347,10 +343,7 @@ utilities() {
 devkit() {
     info "Setting up developer kit..."
 
-    sudo pacman -Syu
-
-    install mise
-    install docker docker-compose
+    install_stage_packages devkit
 
     info "Configuring Docker..."
     step 1 "Enabling Docker service"
@@ -358,22 +351,12 @@ devkit() {
     step 1 "Adding user to docker group"
     sudo usermod -aG docker "$USER"
 
-    # System toolchain
-    install clang gdb lldb cmake ninja valgrind
-    install c3c
+    step 1 "Installing global mise tools"
+    install_stage_packages devkit mise
 
-    step 1 "Installing Zig globally"
-    mise use -g zig
-
-    step 1 "Installing Dotnet globally"
-    mise use -g dotnet
-
-    # Mobile
-    yay -S --needed --noconfirm jetbrains-toolbox
-    install scrcpy
-
-    # IDEs (AUR)
-    yay -S --needed --noconfirm zed visual-studio-code-bin
+    # AUR packages
+    info "Installing AUR packages..."
+    install_stage_packages devkit aur
 
     success "Developer kit installation complete."
 }
@@ -386,14 +369,7 @@ devkit() {
 #   fonts
 fonts() {
     info "Installing fonts..."
-    install \
-        noto-fonts \
-        noto-fonts-cjk \
-        noto-fonts-emoji \
-        noto-fonts-extra \
-        ttf-dejavu \
-        ttf-liberation \
-        curl
+    install_stage_packages fonts
 
     # Comic Mono — not in the repos; fetch from upstream and register
     # system-wide so fontconfig (and Alacritty's "Comic Mono" family) finds it.
@@ -469,6 +445,11 @@ main() {
             exit 1
         fi
     done
+
+    if [[ ! -f "$PACKAGES_FILE" ]]; then
+        error "Missing package list: $PACKAGES_FILE"
+        exit 1
+    fi
 
     # Full system update first
     info "Updating system..."

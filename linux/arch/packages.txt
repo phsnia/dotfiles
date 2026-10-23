@@ -1,0 +1,80 @@
+# Arch Linux packages installed by bootstrap.sh
+#
+# Format: <stage> <manager> <package>
+#   stage:   core | drivers | utilities | devkit | fonts | polkit
+#   manager: pacman | aur | mise
+#
+# Blank lines and comments are ignored. Within a stage, packages are installed
+# grouped by manager, in file order:
+#   pacman -> sudo pacman -S
+#   aur    -> yay -S
+#   mise   -> mise use -g
+
+# --- core ---
+core       pacman  git
+core       pacman  base-devel
+core       pacman  vim
+core       pacman  alacritty
+
+# --- drivers ---
+drivers    pacman  mesa
+drivers    pacman  intel-media-driver
+drivers    pacman  libva-intel-driver
+drivers    pacman  vulkan-intel
+drivers    pacman  vulkan-radeon
+drivers    pacman  xf86-video-amdgpu
+drivers    pacman  xf86-video-ati
+drivers    pacman  vulkan-nouveau
+drivers    pacman  xf86-video-nouveau
+
+# --- utilities ---
+utilities  pacman  i3
+utilities  pacman  xorg-server
+utilities  pacman  xorg-xinit
+utilities  pacman  ly
+utilities  pacman  dmenu
+utilities  pacman  neovim
+utilities  pacman  tmux
+utilities  pacman  feh
+utilities  pacman  thunar
+utilities  pacman  thunar-volman
+utilities  pacman  gvfs
+utilities  pacman  tumbler
+utilities  pacman  htop
+utilities  pacman  pipewire
+utilities  pacman  pipewire-pulse
+utilities  pacman  pavucontrol
+utilities  pacman  alsa-utils
+utilities  pacman  sof-firmware
+utilities  aur     brave-bin
+
+# --- devkit ---
+devkit     pacman  mise
+devkit     pacman  docker
+devkit     pacman  docker-compose
+devkit     pacman  clang
+devkit     pacman  gdb
+devkit     pacman  lldb
+devkit     pacman  cmake
+devkit     pacman  ninja
+devkit     pacman  valgrind
+devkit     pacman  c3c
+devkit     pacman  scrcpy
+devkit     aur     jetbrains-toolbox
+devkit     aur     zed
+devkit     aur     visual-studio-code-bin
+devkit     mise    zig
+devkit     mise    dotnet
+
+# --- fonts ---
+fonts      pacman  noto-fonts
+fonts      pacman  noto-fonts-cjk
+fonts      pacman  noto-fonts-emoji
+fonts      pacman  noto-fonts-extra
+fonts      pacman  ttf-dejavu
+fonts      pacman  ttf-liberation
+fonts      pacman  curl
+
+# --- polkit ---
+polkit     pacman  polkit
+polkit     pacman  udiskie
