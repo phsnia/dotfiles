@@ -1,4 +1,4 @@
-# Shared Folder: Host → Linux VM
+# VM about Sharing Folder: Host → Linux VM
 
 Mount a host folder in a Linux guest with `open-vm-tools` and `vmhgfs-fuse`.
 The guest sees the share as `.host:/<SHARE_NAME>`, where `<SHARE_NAME>` is the
