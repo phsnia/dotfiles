@@ -129,3 +129,48 @@ CMD ["npm", "start"]
 * ``WORKDIR`` - sets the working directory inside the image
 * ``COPY`` - copies files from the build context into the image
 * ``RUN`` - executes commands during image building
+* ``EXPOSE`` - 
+
+## 1.6.2 Docker Compose
+  allow you define multiple services, networks and volumes in a single YAML file
+
+```
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+```
+
+## Explanation
+* ``services``: defines the application's services
+* ``app``: service name
+* ``build``: builds the image
+* ``ports``:  maps the host port to the container port.
+* ``restart``: unless-stopped restarts the container unless it has been explicitly stopped.
+
+## Common Docker Compose commands
+
+```
+docker compose up
+  Creates and starts the services.
+
+docker compose up -d
+  Starts the services in the background.
+
+docker compose down
+  Stops and removes the containers and default network.
+
+docker compose build
+  Builds or rebuilds service images.
+
+docker compose ps
+  Lists the Compose project's containers.
+
+docker compose logs
+  Displays service logs.
+
+docker compose restart
+  Restarts the services.
+```
