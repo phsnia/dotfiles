@@ -65,6 +65,7 @@ devkit     aur     zed
 devkit     aur     visual-studio-code-bin
 devkit     mise    zig
 devkit     mise    dotnet
+devkit     mise    bun 
 
 # --- fonts ---
 fonts      pacman  noto-fonts
