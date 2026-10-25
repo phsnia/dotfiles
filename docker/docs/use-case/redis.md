@@ -25,3 +25,8 @@ Open a Redis CLI session
 ```
 docker exec -it redis redis-cli
 ```
+
+```
+docker exec -it redis-stack redis-cli \
+  -a 'change-this-password' PING
+```
