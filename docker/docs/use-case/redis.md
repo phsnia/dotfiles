@@ -27,6 +27,7 @@ docker exec -it redis redis-cli
 ```
 
 ```
-docker exec -it redis-stack redis-cli \
-  -a 'change-this-password' PING
+docker exec -it redis-stack redis-cli 
+AUTH <PASSWORD>
+PING
 ```
