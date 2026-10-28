@@ -32,8 +32,8 @@ function cproj {
     Set-Location "C:\Projects"
 }
 
-#
-function fpush {
+# 
+function git_push {
     git status
 
     $confirm = Read-Host "Do you want to force push? (y/N)"
@@ -55,4 +55,20 @@ function fpush {
     }
 
     git push origin main
+}
+
+param(
+    [string]$Path = ".",
+    [int]$MatxDepth = -1,
+    [switch]$ShowFiles
+)
+
+function Vtr() {
+    param(
+        [string]$Path = ".",
+        [int]$MaxDepth = -1,
+        [switch]$ShowFiles
+    )
+
+    if($MaxDepth -ge)
 }

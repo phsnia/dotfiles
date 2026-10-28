@@ -50,28 +50,59 @@ export PATH="$HOME/.opencode/bin:$PATH"
 #   @param {string} [dir=.] - the directory to display
 #   @param {string} [prefix=""] - The indentation prefix used for recursion.
 #   @returns {void}
+# vtr() {
+#     local dir="${1:-.}"
+#     local prefix="${2:-}"
+
+#     local paths=("$dir"/*)
+#     local filtered=()
+
+#     for path in "${paths[@]}"; do
+#         [[ -e "$path" ]] && filtered+=("$path")
+#     done
+
+#     local total=${#filtered[@]}
+#     local i=0
+
+#     for path in "${filtered[@]}"; do
+#         ((i++))
+#         if (( i == total )); then
+#             printf '%s└── %s\n' "$prefix" "${path##*/}"
+#             [[ -d "$path" ]] && vtr "$path" "${prefix}    "
+#         else
+#             printf '%s├── %s\n' "$prefix" "${path##*/}"
+#             [[ -d "$path" ]] && vtr "$path" "${prefix}│   "
+#         fi
+#     done
+# }
+
 vtr() {
-    local dir="${1:-.}"
-    local prefix="${2:-}"
+    local current_path="${1:-.}"
+    local max_depth="${2:-}"
+    local walk_dir
 
-    local paths=("$dir"/*)
-    local filtered=()
+    walk_dir() {
+        local path="$1"
+        local prefix="$2"
+        local depth="$3"
+        local entry 
+        local entries=()
+        local i count connector next_prefix
 
-    for path in "${paths[@]}"; do
-        [[ -e "$path" ]] && filtered+=("$path")
-    done
-
-    local total=${#filtered[@]}
-    local i=0
-
-    for path in "${filtered[@]}"; do
-        ((i++))
-        if (( i == total )); then
-            printf '%s└── %s\n' "$prefix" "${path##*/}"
-            [[ -d "$path" ]] && vtr "$path" "${prefix}    "
-        else
-            printf '%s├── %s\n' "$prefix" "${path##*/}"
-            [[ -d "$path" ]] && vtr "$path" "${prefix}│   "
+        if [[ -n "$max_depth" ]] && (( depth >= max_depth )); then
+            return
         fi
-    done
+
+        shopt -s nullglob dotglob
+        entries=("$path"/*)
+        shopt -u nullglob dotglob
+    
+        if ((${#entries[@]})); then
+            while IFS= read -r entry; do
+                sorted+=("$entry")
+            done < <(printf '%s\n' "${entries[@]}" | sort)
+        fi
+    }
 }
+
+
