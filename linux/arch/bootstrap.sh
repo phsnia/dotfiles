@@ -23,6 +23,16 @@ readonly PACKAGES_FILE="$DOTFILES_DIR/packages.txt"
 # Polkit mount rule is written for this user (override with POLKIT_USER).
 readonly POLKIT_USER="${POLKIT_USER:-phng}"
 
+# External fonts fetched from upstream (not in repos)
+readonly FONT_DIR_BASE="/usr/local/share/fonts"
+
+# Format: "<family>/<filename>|<url>"
+# family -> installed to $FONT_DIR_BASE/<family>
+readonly -a EXTRA_FONTS=(
+    "comic-mono/ComicMono.ttf|https://dtinth.github.io/comic-mono-font/ComicMono.ttf"
+    "comic-mono/ComicMono-Bold.ttf|https://dtinth.github.io/comic-mono-font/ComicMono-Bold.ttf"
+)
+
 # Colors & log helpers
 
 readonly RED='\033[0;31m'
@@ -363,7 +373,7 @@ devkit() {
 
 # --- Fonts ---
 
-# Install optional system fonts (Noto, Dejavu, Liberation, Comic Mono).
+# Install optional system fonts (Noto, Dejavu, Liberation, + any EXTRA_FONTS).
 #
 # @example
 #   fonts
@@ -371,19 +381,35 @@ fonts() {
     info "Installing fonts..."
     install_stage_packages fonts
 
-    # Comic Mono — not in the repos; fetch from upstream and register
-    # system-wide so fontconfig (and Alacritty's "Comic Mono" family) finds it.
-    local font_dir="/usr/local/share/fonts/comic-mono"
-    if [[ ! -f "$font_dir/ComicMono.ttf" ]]; then
-        info "Installing Comic Mono..."
-        sudo install -d -m 755 "$font_dir"
-        sudo curl -fsSLo "$font_dir/ComicMono.ttf" \
-            https://dtinth.github.io/comic-mono-font/ComicMono.ttf
-        sudo chmod 644 "$font_dir/ComicMono.ttf"
-    fi
+    local entry relpath url family filename target_dir
+    local -A created_dirs=()
+
+    for entry in "${EXTRA_FONTS[@]}"; do
+        IFS='|' read -r relpath url <<< "$entry"
+        family="${relpath%%/*}"
+        filename="${relpath##*/}"
+        target_dir="$FONT_DIR_BASE/$family"
+
+        if [[ -z "${created_dirs[$target_dir]:-}" ]]; then
+            step 1 "Ensuring $target_dir exists"
+            sudo install -d -m 755 "$target_dir"
+            created_dirs[$target_dir]=1
+        fi
+
+        if [[ ! -f "$target_dir/$filename" ]]; then
+            step 1 "Downloading $filename ($family)"
+            curl -fsSL "$url" | sudo tee "$target_dir/$filename" >/dev/null || {
+                error "Failed to download $filename"
+                return 1
+            }
+            sudo chmod 644 "$target_dir/$filename"
+        else
+            step 1 "$filename ($family) already installed, skipping"
+        fi
+    done
 
     step 1 "Refreshing font cache"
-    sudo fc-cache -f "$font_dir"
+    sudo fc-cache -f "$FONT_DIR_BASE"
 
     success "Fonts installed."
 }

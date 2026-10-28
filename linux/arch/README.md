@@ -8,34 +8,37 @@ configs in `.config/` into `~/.config`. See `ARCHITECTURE.md` for the flow.
 ## Structure
 
 ```text
-arch/
-├── .bashrc                 # shell startup file -> ~/.bashrc
-├── .gitignore              # ignores machine-local secrets and state
-├── ARCHITECTURE.md         # mermaid flowchart of bootstrap.sh
-├── bootstrap.sh            # installer / configurator
-├── packages.txt            # package definitions per stage
-├── README.md
-└── .config/                # XDG configs -> ~/.config
-    ├── alacritty/
-    │   └── alacritty.toml
-    ├── git/
-    │   ├── .env.example
-    │   ├── config
-    │   └── README.md
-    ├── i3/
-    │   └── config
-    ├── ssh/
-    │   ├── config
-    │   ├── local.example
-    │   └── README.md
-    ├── tealdeer/
-    │   ├── config.toml
-    │   └── pages/
-    │       ├── cheat.page.md
-    │       ├── gitc.page.md
-    │       └── sshc.page.md
-    └── tmux/
-        └── tmux.conf
+arch
+├── .bashrc
+├── .config
+│   ├── alacritty
+│   │   ├── alacritty.toml
+│   │   └── README.md
+│   ├── git
+│   │   ├── .env.example
+│   │   ├── config
+│   │   └── README.md
+│   ├── i3
+│   │   └── config
+│   ├── rofi
+│   │   └── config.rasi
+│   ├── ssh
+│   │   ├── config
+│   │   ├── local.example
+│   │   └── README.md
+│   ├── tealdeer
+│   │   ├── config.toml
+│   │   └── pages
+│   │       ├── cheat.page.md
+│   │       ├── gitc.page.md
+│   │       └── sshc.page.md
+│   └── tmux
+│       └── tmux.conf
+├── .gitignore
+├── ARCHITECTURE.md
+├── bootstrap.sh
+├── packages.txt
+└── README.md
 ```
 
 ## Scripts
@@ -80,6 +83,7 @@ the polkit rule.
 | `alacritty/` | Terminal emulator |
 | `git/` | git config and credential setup (see `git/README.md`) |
 | `i3/` | Window manager |
+| `rofi/` | Application launcher |
 | `ssh/` | ssh config and include shim (see `ssh/README.md`) |
 | `tealdeer/` | tldr client config and custom pages |
 | `tmux/` | Terminal multiplexer |
